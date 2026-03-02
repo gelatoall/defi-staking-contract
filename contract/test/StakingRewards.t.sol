@@ -5,7 +5,6 @@ import "forge-std/Test.sol";
 import "../src/StakingRewards.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
-
 contract MockERC20 is ERC20 {
     constructor(string memory name, string memory symbol) ERC20(name, symbol) {}
 
@@ -22,22 +21,31 @@ contract StakingRewardsTest is Test {
     address public alice = makeAddr("alice");
     address public bob = makeAddr("bob");
 
-    uint256 public constant REWARD_RATE = 100e18; // 硬编码的值
-
     function setUp() public {
         // 1. 部署环境
         stakingToken = new MockERC20("Staking Token", "STK");
         rewardToken = new MockERC20("Reward Token", "RTK");
-        
+
         // 2. 部署合约
         staking = new StakingRewards(address(stakingToken), address(rewardToken));
 
-        // 3. 初始化代币：给 Alice 和 Bob 发钱，并给合约注入奖励储备
+        // -----------------------------------------------------------
+        // 3. 系统配置阶段
+        // -----------------------------------------------------------
+        // 显式设置奖励周期
+        uint256 duration = 7 days;
+        staking.setRewardsDuration(duration);
+
+        // 4. 资金注入与初始化
+        uint256 initRate = 100e18;
+        uint256 totalReward = initRate * duration;
+        rewardToken.mint(address(staking), totalReward);
+        staking.notifyRewardAmount(totalReward);
+
+        // 5. 用户初始化
         stakingToken.mint(alice, 1000e18);
         stakingToken.mint(bob, 1000e18);
-        rewardToken.mint(address(staking), 100000e18);
-
-        // 4. 预先授权：让 Alice 和 Bob 允许合约划转他们的 STK
+        // 预先授权：让 Alice 和 Bob 允许合约划转他们的 STK
         vm.prank(alice);
         stakingToken.approve(address(staking), type(uint256).max);
         vm.prank(bob);
@@ -55,7 +63,7 @@ contract StakingRewardsTest is Test {
         vm.warp(block.timestamp + 10);
 
         // 预期收益 = 10s * 100 rate = 1000
-        uint256 expected = 10 * REWARD_RATE;
+        uint256 expected = 10 * staking.rewardRate();
         assertEq(staking.earned(alice), expected, "Alice should earn 1000 tokens");
     }
 
@@ -68,7 +76,7 @@ contract StakingRewardsTest is Test {
         // T=10: 快进 10 秒
         vm.warp(block.timestamp + 10);
         // 此时 Alice 独享 10 * 100 = 1000
-        uint256 expected = 10 * REWARD_RATE;
+        uint256 expected = 10 * staking.rewardRate();
         assertEq(staking.earned(alice), expected, "Alice should earn 1000 tokens");
 
         // T=10: Bob 也存 100，总额变为 200，各占 50%
@@ -77,7 +85,7 @@ contract StakingRewardsTest is Test {
 
         // T=20: 再快进 10 秒
         vm.warp(block.timestamp + 10);
-        
+
         // 此时这 10 秒产生的 1000 奖励应平分 (500/500)
         // Alice 总计: 1000 + 500 = 1500
         // Bob 总计: 500
@@ -94,7 +102,7 @@ contract StakingRewardsTest is Test {
         // T=10: 快进 10 秒
         vm.warp(block.timestamp + 10);
         // 此时 Alice 独享 10 * 100 = 1000
-        uint256 expected = 10 * REWARD_RATE;
+        uint256 expected = 10 * staking.rewardRate();
         assertEq(staking.earned(alice), expected, "Alice should earn 1000 tokens");
 
         // T=10: Alice 再存 300
@@ -105,7 +113,7 @@ contract StakingRewardsTest is Test {
         vm.warp(block.timestamp + 10);
         // 此时虽然本金变了，但 Alice 还是独享 10 * 100 = 1000
         assertEq(staking.earned(alice), 2000e18, "Alice should earn 2000 tokens");
-        
+
         // T=20: Bob 存 100，总额变为 500，Alice 占 80%，Bob 占 20%
         vm.prank(bob);
         staking.stake(100e18);
@@ -120,7 +128,7 @@ contract StakingRewardsTest is Test {
     }
 
     /// @dev 用例 4：确保 stake 和 withdraw 不仅仅是修改了变量，还要真实地转移了代币，
-                /// 且 totalSupply 永远等于所有用户 balance 的总和。
+    /// 且 totalSupply 永远等于所有用户 balance 的总和。
     function test_FundFlowIntegrity() public {
         uint256 stakeAmount = 100e18;
 
@@ -137,14 +145,18 @@ contract StakingRewardsTest is Test {
         uint256 contractStakingAfter = stakingToken.balanceOf(address(staking));
 
         // 4. 断言验证 (Assertions)
-    
+
         // 验证 Alice 的代币确实减少了
-        assertEq(aliceStakingBefore - aliceStakingAfter, stakeAmount, 
-                "Alice's token balance should decrease by stakeAmount");
+        assertEq(
+            aliceStakingBefore - aliceStakingAfter, stakeAmount, "Alice's token balance should decrease by stakeAmount"
+        );
 
         // 验证合约收到了这笔钱
-        assertEq(contractStakingAfter - contractStakingBefore, stakeAmount, 
-                "Contract's token balance should increase by stakeAmount");
+        assertEq(
+            contractStakingAfter - contractStakingBefore,
+            stakeAmount,
+            "Contract's token balance should increase by stakeAmount"
+        );
 
         // 5. 额外验证：合约内部的记账 (Internal Accounting)
         assertEq(staking._balances(alice), stakeAmount, "Internal balance should match");
@@ -174,7 +186,7 @@ contract StakingRewardsTest is Test {
         // 2. T=10: 快进 10 秒
         vm.warp(block.timestamp + 10);
         // 此时 Alice 独享 10 * 100 = 1000
-        uint256 expected = 10 * REWARD_RATE;
+        uint256 expected = 10 * staking.rewardRate();
         assertEq(staking.earned(alice), expected, "Alice should earn 1000 tokens");
 
         // 3. 第一次领取奖励
@@ -185,11 +197,10 @@ contract StakingRewardsTest is Test {
         staking.getReward();
 
         uint256 aliceRewardAfter = rewardToken.balanceOf(alice);
-        
+
         // --- 验证点 1: 钱确实到账了 ---
-        assertEq(aliceRewardAfter - aliceRewardBefore, expected, 
-                "Alice should receive exactly 1000 reward tokens");
-        
+        assertEq(aliceRewardAfter - aliceRewardBefore, expected, "Alice should receive exactly 1000 reward tokens");
+
         // --- 验证点 2: 账本必须清零 ---
         // 虽然 updateReward 还在跑，但因为 Alice 没提现本金，
         // 在 getReward 触发的一瞬间，earned(alice) 应该变回 0（或者接近 0 的极小值，取决于 block.timestamp）
@@ -201,7 +212,7 @@ contract StakingRewardsTest is Test {
         staking.getReward();
 
         uint256 balanceAfterSecondClaim = rewardToken.balanceOf(alice);
-        
+
         // --- 验证点 3: 余额不应再增加 ---
         assertEq(balanceAfterSecondClaim, aliceRewardAfter, "Second claim should not transfer any tokens");
     }
@@ -256,5 +267,72 @@ contract StakingRewardsTest is Test {
         vm.prank(alice);
         vm.expectRevert(StakingRewards.ZeroAmount.selector);
         staking.withdraw(0);
+    }
+
+    /// @dev 用例10：验证“平滑合并”逻辑
+    function test_NotifyRewardAmount_ContinuousInjection() public {
+        // 1. T=0 初始状态 (setUp 已注入 100/s)
+        assertEq(staking.rewardRate(), 100e18);
+
+        // 2. 快进到 3.5 天（周期刚好过半）
+        vm.warp(block.timestamp + 3.5 days);
+
+        // 此时剩余奖励应该还有一半：100 * 3.5 days
+        uint256 remaining = (staking.periodFinish() - block.timestamp) * staking.rewardRate();
+
+        // 3. 管理员再次注入一笔新的奖励
+        uint256 newAmount = 7000e18;
+        rewardToken.mint(address(staking), newAmount);
+        staking.notifyRewardAmount(newAmount);
+
+        // 4. 验证新流速是否符合公式：(剩余 + 新增) / 7天
+        uint256 expectedRate = (remaining + newAmount) / staking.rewardsDuration();
+        assertEq(staking.rewardRate(), expectedRate, "Reward rate should merge smoothly");
+    }
+
+    /// @dev 用例11：setRewardsDuration 报错路径
+    function test_RevertIf_SetDurationDuringActivePeriod() public {
+        // 因为 setUp 已经启动了奖励，此时 periodFinish 在未来
+        vm.expectRevert(StakingRewards.RewardPeriodActive.selector);
+        staking.setRewardsDuration(14 days);
+    }
+
+    /// @dev 用例12：setRewardsDuration 成功路径 + Funcs 覆盖
+    function test_SetDurationAfterPeriodFinish() public {
+        // 快进到当前奖励周期结束之后
+        vm.warp(staking.periodFinish() + 1);
+
+        uint256 newDuration = 14 days;
+        staking.setRewardsDuration(newDuration);
+        assertEq(staking.rewardsDuration(), newDuration);
+    }
+
+    /// @dev 用例13：getReward 的 "if (rewardToClaim > 0)" 为假的情况
+    function test_GetReward_WithZeroRewards() public {
+        // 让一个从未质押过的地址（比如新创建的 charlie）去领钱
+        address charlie = makeAddr("charlie");
+        vm.prank(charlie);
+        staking.getReward();
+
+        // 验证 charlie 依然没钱，且合约没有因为 zero transfer 报错
+        assertEq(rewardToken.balanceOf(charlie), 0);
+    }
+
+    /// @dev 用例14: rewardPerToken() 当 totalSupply 为 0 时的分支
+    function test_RewardPerToken_ZeroSupply() public view {
+        // 此时没有任何人质押
+        assertEq(staking._totalSupply(), 0);
+        // 验证它直接返回 rewardPerTokenStored (初始为 0)
+        assertEq(staking.rewardPerToken(), 0);
+    }
+
+    /// @dev 用例15: notifyRewardAmount 偿付能力不足的报错分支
+    function test_RevertIf_AdminNotifyWithoutEnoughBalance() public {
+        // 假设要注入 1000e18，但我们不给合约打钱
+        uint256 hugeAmount = 1000e18;
+
+        // 预期报错 InsufficientBalance
+        vm.expectRevert(StakingRewards.InsufficientRewardBalance.selector);
+        staking.notifyRewardAmount(hugeAmount);
     }
 }

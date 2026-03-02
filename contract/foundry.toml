@@ -3,4 +3,7 @@ src = "src"
 out = "out"
 libs = ["lib"]
 
+# 屏蔽掉 2424 (Natspec assembly deprecation) 警告
+ignored_error_codes = [2424]
+
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

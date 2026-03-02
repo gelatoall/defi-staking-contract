@@ -13,7 +13,7 @@ contract StakingRewards is Ownable, ReentrancyGuard {
     // Constants
     // ============================================
     uint256 public constant PRECISION = 1e18;
-    
+
     // ============================================
     // State Variables
     // ============================================
@@ -25,14 +25,20 @@ contract StakingRewards is Ownable, ReentrancyGuard {
     IERC20 public rewardToken;
 
     /// @dev Reward rate in rewardToken per second.
-    uint256 public rewardRate = 100e18;
+    uint256 public rewardRate;
 
     /// @dev Last time the reward rate was updated.
     uint256 public lastUpdateTime;
-    
+
     /// @dev Global accumulated reward per token. (R)
     /// Sum of (rewardRate * dt * 1e18 / totalSupply)
     uint256 public rewardPerTokenStored;
+
+    /// @dev Total duration (in seconds) over which the injected reward amount is distributed.
+    uint256 public rewardsDuration;
+
+    /// @dev The Unix timestamp marking the end of the current reward distribution period.
+    uint256 public periodFinish;
 
     /// @dev user address => last recorded rewardPerTokenStored value used for reward calculation
     mapping(address => uint256) public userRewardPerTokenPaid;
@@ -58,7 +64,10 @@ contract StakingRewards is Ownable, ReentrancyGuard {
 
     error ZeroAddress();
     error ZeroAmount();
+    error ZeroRewardRate();
     error InsufficientBalance();
+    error InsufficientRewardBalance();
+    error RewardPeriodActive();
 
     // ============================================
     // Modifiers
@@ -66,7 +75,7 @@ contract StakingRewards is Ownable, ReentrancyGuard {
     modifier updateReward(address account) {
         // Global updates
         rewardPerTokenStored = rewardPerToken();
-        lastUpdateTime = block.timestamp;
+        lastUpdateTime = lastTimeRewardApplicable();
 
         // Personal updates
         if (account != address(0)) {
@@ -76,7 +85,6 @@ contract StakingRewards is Ownable, ReentrancyGuard {
 
         _;
     }
-    
 
     // ============================================
     // Constructor
@@ -90,12 +98,11 @@ contract StakingRewards is Ownable, ReentrancyGuard {
         rewardToken = IERC20(_rewardToken);
     }
 
-    
     // ============================================
     // Staking Integration
     // ============================================
 
-    function stake(uint256 amount) external nonReentrant updateReward(msg.sender){
+    function stake(uint256 amount) external nonReentrant updateReward(msg.sender) {
         if (amount == 0) {
             revert ZeroAmount();
         }
@@ -108,7 +115,6 @@ contract StakingRewards is Ownable, ReentrancyGuard {
         emit Staked(msg.sender, amount);
     }
 
-    
     function withdraw(uint256 amount) external nonReentrant updateReward(msg.sender) {
         if (amount == 0) {
             revert ZeroAmount();
@@ -128,7 +134,7 @@ contract StakingRewards is Ownable, ReentrancyGuard {
 
     function getReward() external nonReentrant updateReward(msg.sender) {
         uint256 rewardToClaim = rewards[msg.sender];
-        if (rewardToClaim > 0 ) {
+        if (rewardToClaim > 0) {
             delete rewards[msg.sender];
             rewardToken.safeTransfer(msg.sender, rewardToClaim);
             emit RewardPaid(msg.sender, rewardToClaim);
@@ -143,18 +149,48 @@ contract StakingRewards is Ownable, ReentrancyGuard {
             return rewardPerTokenStored;
         }
 
-        return rewardPerTokenStored + 
-            (rewardRate * (block.timestamp - lastUpdateTime) * PRECISION / _totalSupply);
+        return
+            rewardPerTokenStored
+                + (rewardRate * (lastTimeRewardApplicable() - lastUpdateTime) * PRECISION / _totalSupply);
     }
-
 
     function earned(address account) public view returns (uint256) {
         return _balances[account] * (rewardPerToken() - userRewardPerTokenPaid[account]) / PRECISION + rewards[account];
     }
 
+    function lastTimeRewardApplicable() public view returns (uint256) {
+        return block.timestamp < periodFinish ? block.timestamp : periodFinish;
+    }
 
     // ============================================
     // Admin Functions
     // ============================================
+    function setRewardsDuration(uint256 _rewardsDuration) external onlyOwner {
+        if (block.timestamp <= periodFinish) {
+            revert RewardPeriodActive();
+        }
 
+        rewardsDuration = _rewardsDuration;
+    }
+
+    function notifyRewardAmount(uint256 amount) external onlyOwner updateReward(address(0)) {
+        if (block.timestamp >= periodFinish) {
+            rewardRate = amount / rewardsDuration;
+        } else {
+            uint256 remaining = (periodFinish - block.timestamp) * rewardRate;
+            rewardRate = (remaining + amount) / rewardsDuration;
+        }
+
+        if (rewardRate == 0) {
+            revert ZeroRewardRate();
+        }
+
+        uint256 balance = rewardToken.balanceOf(address(this));
+        if (rewardRate * rewardsDuration > balance) {
+            revert InsufficientRewardBalance();
+        }
+
+        lastUpdateTime = block.timestamp;
+        periodFinish = block.timestamp + rewardsDuration;
+    }
 }
