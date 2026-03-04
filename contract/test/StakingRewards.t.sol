@@ -57,7 +57,7 @@ contract StakingRewardsTest is Test {
         uint256 amount = 100e18;
         // Alice 质押
         vm.prank(alice);
-        staking.stake(amount);
+        staking.stake(amount, 0);
 
         // --- 时空传送：快进 10 秒 ---
         vm.warp(block.timestamp + 10);
@@ -69,9 +69,9 @@ contract StakingRewardsTest is Test {
 
     /// @dev 用例 2：验证多用户分摊收益 (核心算法)
     function test_MultiUserFairSplit() public {
-        // T=0: Alice 存 100
+        // T=0: Alice 存 100，weight tier 0 1x
         vm.prank(alice);
-        staking.stake(100e18);
+        staking.stake(100e18, 0);
 
         // T=10: 快进 10 秒
         vm.warp(block.timestamp + 10);
@@ -79,25 +79,26 @@ contract StakingRewardsTest is Test {
         uint256 expected = 10 * staking.rewardRate();
         assertEq(staking.earned(alice), expected, "Alice should earn 1000 tokens");
 
-        // T=10: Bob 也存 100，总额变为 200，各占 50%
+        // T=10: Bob 也存 100，weight tier 3 3x
+        // weight：Alice是100（占0.25），Bob是300（占0.75），总weight是400
         vm.prank(bob);
-        staking.stake(100e18);
+        staking.stake(100e18, 3);
 
         // T=20: 再快进 10 秒
         vm.warp(block.timestamp + 10);
 
-        // 此时这 10 秒产生的 1000 奖励应平分 (500/500)
-        // Alice 总计: 1000 + 500 = 1500
-        // Bob 总计: 500
-        assertEq(staking.earned(alice), 1500e18, "Alice should earn 1500 tokens");
-        assertEq(staking.earned(bob), 500e18, "Bob should earn 500 tokens");
+        // 此时这 10 秒产生的 1000 奖励按比例分 (250/750)
+        // Alice 总计: 1000 + 250 = 1250
+        // Bob 总计: 750
+        assertEq(staking.earned(alice), 1250e18, "Alice should earn 1250 tokens");
+        assertEq(staking.earned(bob), 750e18, "Bob should earn 750 tokens");
     }
 
     /// @dev 用例 3：验证同一用户在增减本金后，后续收益的计算是否即时调整。
     function test_SingleUserDynamicWeighting() public {
-        // T=0: Alice 存 100
+        // T=0: Alice 存 100，weight tier0 1x
         vm.prank(alice);
-        staking.stake(100e18);
+        staking.stake(100e18, 0);
 
         // T=10: 快进 10 秒
         vm.warp(block.timestamp + 10);
@@ -105,32 +106,36 @@ contract StakingRewardsTest is Test {
         uint256 expected = 10 * staking.rewardRate();
         assertEq(staking.earned(alice), expected, "Alice should earn 1000 tokens");
 
-        // T=10: Alice 再存 300
+        // T=10: Alice 再存 100，weight tier3 3x
         vm.prank(alice);
-        staking.stake(300e18);
+        staking.stake(100e18, 3);
 
         // T=20: 快进 10 秒
         vm.warp(block.timestamp + 10);
-        // 此时虽然本金变了，但 Alice 还是独享 10 * 100 = 1000
+        // 此时 Alice 还是独享 10 * 100 = 1000
+        // Alice earn：1000 + 1000 = 2000 
         assertEq(staking.earned(alice), 2000e18, "Alice should earn 2000 tokens");
 
-        // T=20: Bob 存 100，总额变为 500，Alice 占 80%，Bob 占 20%
+        // T=20: Bob 存 100，weight tier0 1x
+        // weight：Alice 400 占 80%，Bob 100 占 20%
         vm.prank(bob);
-        staking.stake(100e18);
+        staking.stake(100e18, 0);
 
         // T=30: 快进 10 秒
         // 此时这 10 秒产生的 1000 奖励按比例分 (800/200)
         // Alice 总计: 2000 + 800 = 2800
         // Bob 总计: 200
         vm.warp(block.timestamp + 10);
-        assertEq(staking.earned(alice), 2800e18, "Alice should earn 2500 tokens");
-        assertEq(staking.earned(bob), 200e18, "Bob should earn 500 tokens");
+        assertEq(staking.earned(alice), 2800e18, "Alice should earn 2800 tokens");
+        assertEq(staking.earned(bob), 200e18, "Bob should earn 200 tokens");
     }
 
     /// @dev 用例 4：确保 stake 和 withdraw 不仅仅是修改了变量，还要真实地转移了代币，
     /// 且 totalSupply 永远等于所有用户 balance 的总和。
     function test_FundFlowIntegrity() public {
         uint256 stakeAmount = 100e18;
+        uint256 tierIndex = 3;
+        uint256 expectedWeight = stakeAmount * tierIndex;
 
         // 1. 记录操作前的状态 (Snapshots)
         uint256 aliceStakingBefore = stakingToken.balanceOf(alice);
@@ -138,56 +143,72 @@ contract StakingRewardsTest is Test {
 
         // 2. 执行质押操作
         vm.prank(alice);
-        staking.stake(stakeAmount);
+        staking.stake(stakeAmount, tierIndex);
 
-        // 3. 记录操作后的状态
+        // 3. 验证质押后的物理账本 (Token Flow)
         uint256 aliceStakingAfter = stakingToken.balanceOf(alice);
         uint256 contractStakingAfter = stakingToken.balanceOf(address(staking));
-
-        // 4. 断言验证 (Assertions)
-
         // 验证 Alice 的代币确实减少了
-        assertEq(
-            aliceStakingBefore - aliceStakingAfter, stakeAmount, "Alice's token balance should decrease by stakeAmount"
-        );
-
+        assertEq(aliceStakingBefore - aliceStakingAfter, stakeAmount, "Alice's token balance should decrease by stakeAmount");
         // 验证合约收到了这笔钱
-        assertEq(
-            contractStakingAfter - contractStakingBefore,
-            stakeAmount,
-            "Contract's token balance should increase by stakeAmount"
-        );
+        assertEq(contractStakingAfter - contractStakingBefore, stakeAmount, "Contract's token balance should increase by stakeAmount");
 
-        // 5. 额外验证：合约内部的记账 (Internal Accounting)
-        assertEq(staking._balances(alice), stakeAmount, "Internal balance should match");
-        assertEq(staking._totalSupply(), stakeAmount, "Total supply should match");
+        // 4. 验证质押后的逻辑账本 (Internal Accounting)
+        // 检查具体档位的本金和权重
+        (uint256 amount, uint256 weight, uint256 unlockTime) = staking.userLocks(alice, tierIndex);
+        assertEq(amount, stakeAmount, "Tier principal should match stakeAmount");
+        assertEq(weight, expectedWeight, "Tier weight should be 3x");
+        assertEq(unlockTime, block.timestamp + 365 days, "Unlock time should be 1 year from now");
 
-        // 6. 执行取钱操作
+        // 检查全局和用户总权重
+        assertEq(staking.userTotalWeight(alice), expectedWeight, "User total weight should match");
+        assertEq(staking.totalWeight(), expectedWeight, "Global total weight should match");
+        
+        // 5. 尝试提前取钱：预期失败 (Safety Check)
         uint256 withdrawAmount = 40e18;
         vm.prank(alice);
-        staking.withdraw(withdrawAmount);
+        vm.expectRevert(abi.encodeWithSelector(StakingRewards.Locked.selector, unlockTime));
+        staking.withdraw(withdrawAmount, tierIndex);
 
-        // 7. 记录操作后的状态
-        uint256 aliceWithdawAfter = stakingToken.balanceOf(alice);
-        uint256 contractWithdawAfter = stakingToken.balanceOf(address(staking));
+        // 6. 拨动时钟：快进 1 年零 1 秒 (Time Warp)
+        vm.warp(block.timestamp + 365 days + 1);
 
-        // 8. 断言验证 (Assertions)
-        assertEq(staking._balances(alice), stakeAmount - withdrawAmount, "Internal balance should match");
-        assertEq(staking._totalSupply(), stakeAmount - withdrawAmount, "Total supply should match");
-        assertEq(contractWithdawAfter, stakeAmount - withdrawAmount, "Contract balance should match");
+        // 7. 执行取钱操作
+        vm.prank(alice);
+        staking.withdraw(withdrawAmount, tierIndex);
+
+        // 8. 验证取钱后的最终账本
+        uint256 expectedRemainAmount = stakeAmount - withdrawAmount;
+        uint256 expectedRemainWeight = expectedRemainAmount * tierIndex;
+
+        // 验证物理代币
+        assertEq(stakingToken.balanceOf(address(staking)), contractStakingBefore + expectedRemainAmount);        
+        
+        // 验证逻辑权重更新
+        assertEq(staking.userTotalWeight(alice), expectedRemainWeight, "User total weight should decrease proportionally");
+        assertEq(staking.totalWeight(), expectedRemainWeight, "Global total weight should decrease proportionally");
+        
+        // 验证该档位的本金更新
+        (uint256 finalAmount, ,) = staking.userLocks(alice, tierIndex);
+        assertEq(finalAmount, expectedRemainAmount, "Tier principal should match remaining");
     }
 
     /// @dev 用例 5：验证 getReward 是否正确触发了“转账 + 清零”的原子操作。
-    function test_ClaimingAtomicity() public {
-        // 1. T=0: Alice 存 100
+    function test_ClaimingAtomicity_WithWeight() public {
+        // 1. T=0: Alice 质押 100 STK，选择 Tier 1 (90 days, 1.5x multiplier)
+        uint256 stakeAmount = 100e18;
+        uint256 tierIndex = 1; // 1.5x 权重
+        
         vm.prank(alice);
-        staking.stake(100e18);
+        staking.stake(stakeAmount, tierIndex);
 
         // 2. T=10: 快进 10 秒
         vm.warp(block.timestamp + 10);
-        // 此时 Alice 独享 10 * 100 = 1000
+
+        // 计算预期收益：由于 Alice 是当前唯一质押者，她拥有 100% 的权重
+        // 预期收益 = 10秒 * 每秒奖励速率
         uint256 expected = 10 * staking.rewardRate();
-        assertEq(staking.earned(alice), expected, "Alice should earn 1000 tokens");
+        assertEq(staking.earned(alice), expected - 100, "Should match after rounding loss");
 
         // 3. 第一次领取奖励
         // aliceRewardBefore = 0
@@ -198,15 +219,20 @@ contract StakingRewardsTest is Test {
 
         uint256 aliceRewardAfter = rewardToken.balanceOf(alice);
 
-        // --- 验证点 1: 钱确实到账了 ---
-        assertEq(aliceRewardAfter - aliceRewardBefore, expected, "Alice should receive exactly 1000 reward tokens");
+        // --- 验证点 1: 奖励代币真实到账 ---
+        assertEq(aliceRewardAfter - aliceRewardBefore, expected - 100, "Alice should receive exactly 1000 reward tokens");
 
-        // --- 验证点 2: 账本必须清零 ---
-        // 虽然 updateReward 还在跑，但因为 Alice 没提现本金，
-        // 在 getReward 触发的一瞬间，earned(alice) 应该变回 0（或者接近 0 的极小值，取决于 block.timestamp）
+        // --- 验证点 2: 逻辑账本状态重置 ---
+        // 即使 Alice 的本金还在锁定期（90天），她的“已实现收益”在领取后必须归零
         assertEq(staking.earned(alice), 0, "Earned rewards should be reset to 0");
         assertEq(staking.rewards(alice), 0, "Internal rewards mapping should be deleted");
 
+        // --- 验证点 3: 锁仓状态不受领取影响 ---
+        // 确保领取奖励后，Alice 的本金和解锁时间依然完好无损
+        (uint256 lockAmount, , uint256 unlockTime) = staking.userLocks(alice, tierIndex);
+        assertEq(lockAmount, stakeAmount, "Principal should still be locked");
+        assertTrue(block.timestamp < unlockTime, "Position should still be within lock-up period");
+        
         // 4. 再次调用 getReward() (防二次领取测试)
         vm.prank(alice);
         staking.getReward();
@@ -214,34 +240,56 @@ contract StakingRewardsTest is Test {
         uint256 balanceAfterSecondClaim = rewardToken.balanceOf(alice);
 
         // --- 验证点 3: 余额不应再增加 ---
+        // assertEq(aliceRewardAfter, balanceAfterSecondClaim);
         assertEq(balanceAfterSecondClaim, aliceRewardAfter, "Second claim should not transfer any tokens");
     }
 
     /// @dev 用例 6：超支提现 (Insufficient Balance)
     function test_RevertInsufficientBalance() public {
+        uint256 stakeAmount = 100e18;
+        uint256 tierIndex = 0; // 假设选 30 天的档位
         vm.startPrank(alice);
-        staking.stake(100e18);
+        staking.stake(stakeAmount, tierIndex);
+
+        vm.warp(block.timestamp + 31 days);
 
         // 告诉虚拟机：下一行代码必须报错，且报错信息要包含 InsufficientBalance
         vm.expectRevert(StakingRewards.InsufficientBalance.selector);
-        staking.withdraw(101e18);
+        staking.withdraw(stakeAmount + 1, tierIndex);
         vm.stopPrank();
     }
 
     /// @dev 用例7：测试 stake 的鲁棒性
-    function testFuzz_Stake(uint256 amount) public {
+    function testFuzz_Stake(uint256 amount, uint256 tierIndex) public {
         // 1. 约束输入范围 (Constraints)
-        // 必须排除 0，且不能超过 Alice 的初始余额
+        // 限制金额：1 wei 到 Alice 的初始余额 (1000e18)
         amount = bound(amount, 1, 1000e18);
+        // 限制档位：必须在 stakingPeriods 数组范围内 (0 到 3)
+        tierIndex = bound(tierIndex, 0, 3);
 
-        // 2. 执行操作
+        // 2. 获取预期的配置数据 (用于计算预期值)
+        (uint32 duration, uint16 multiplier) = staking.stakingPeriods(tierIndex);
+        uint256 expectedWeight = (amount * uint256(multiplier)) / 100;
+        uint256 expectedUnlockTime = block.timestamp + duration;
+        
+        // 3. 执行操作
         vm.prank(alice);
-        staking.stake(amount);
+        staking.stake(amount, tierIndex);
 
-        // 3. 验证不变性 (Invariants)
-        assertEq(staking._balances(alice), amount);
-        assertEq(staking._totalSupply(), amount);
-        assertEq(stakingToken.balanceOf(address(staking)), amount);
+        // 4. 验证物理不变性 (Physical Invariants)
+        // 合约里存的 Token 必须等于本次质押的 amount
+        assertEq(stakingToken.balanceOf(address(staking)), amount, "Contract token balance mismatch");
+
+        // 5. 验证逻辑不变性 (Logical Invariants)
+        // 验证特定档位的账本记录
+        (uint256 actualAmount, uint256 actualWeight, uint256 actualUnlockTime) = staking.userLocks(alice, tierIndex);
+        assertEq(actualAmount, amount, "Stored amount mismatch");
+        assertEq(actualWeight, expectedWeight, "Calculated weight mismatch");
+        assertEq(actualUnlockTime, expectedUnlockTime, "Unlock time mismatch");
+
+        // 验证聚合索引
+        assertEq(staking.userTotalWeight(alice), expectedWeight, "User total weight mismatch");
+        assertEq(staking.totalWeight(), expectedWeight, "Global total weight mismatch");
     }
 
     /// @dev 用例8：构造函数“零地址”检查
@@ -259,14 +307,14 @@ contract StakingRewardsTest is Test {
     function test_RevertIfStakeZero() public {
         vm.prank(alice);
         vm.expectRevert(StakingRewards.ZeroAmount.selector);
-        staking.stake(0);
+        staking.stake(0, 0);
     }
 
     /// @dev 用例9B：取零金额拦截
     function test_RevertIfWithdrawZero() public {
         vm.prank(alice);
         vm.expectRevert(StakingRewards.ZeroAmount.selector);
-        staking.withdraw(0);
+        staking.withdraw(0, 0);
     }
 
     /// @dev 用例10：验证“平滑合并”逻辑
@@ -321,7 +369,7 @@ contract StakingRewardsTest is Test {
     /// @dev 用例14: rewardPerToken() 当 totalSupply 为 0 时的分支
     function test_RewardPerToken_ZeroSupply() public view {
         // 此时没有任何人质押
-        assertEq(staking._totalSupply(), 0);
+        assertEq(staking.totalWeight(), 0);
         // 验证它直接返回 rewardPerTokenStored (初始为 0)
         assertEq(staking.rewardPerToken(), 0);
     }
@@ -334,5 +382,121 @@ contract StakingRewardsTest is Test {
         // 预期报错 InsufficientBalance
         vm.expectRevert(StakingRewards.InsufficientRewardBalance.selector);
         staking.notifyRewardAmount(hugeAmount);
+    }
+
+    /// @dev 用例16: 验证全额提现后的状态清理，以及二次质押时解锁时间的重新计算
+    function test_StateResetAfterFullWithdraw() public {
+        uint256 stakeAmount = 100e18;
+        uint256 tierIndex = 2; // Tier 2: 180 days
+        (uint32 duration, ) = staking.stakingPeriods(tierIndex);
+
+        // --- 第一阶段：质押并彻底清空 ---
+        vm.prank(alice);
+        staking.stake(stakeAmount, tierIndex);
+
+        // 快进 180 天 + 1 秒，确保已经解锁
+        vm.warp(block.timestamp + duration + 1);
+
+        vm.prank(alice);
+        staking.withdraw(stakeAmount, tierIndex);
+
+        // 【核心验证点 1】：检查 delete 关键字是否生效（存储回收）
+        // 在全额提现后，对应的映射记录应该被重置为初始状态（全 0）
+        (uint256 amount, uint256 weight, uint256 unlockTime) = staking.userLocks(alice, tierIndex);
+
+        assertEq(amount, 0, "Principal record should be cleared");
+        assertEq(weight, 0, "Weight record should be cleared");
+        assertEq(unlockTime, 0, "Unlock time should be reset to 0");
+        assertEq(staking.userTotalWeight(alice), 0, "User's global total weight should be set to 0.");
+
+        // --- 第二阶段：冷启动验证（重新质押） ---
+        // 再次快进 20 天，模拟不连续的操作时间点
+        uint256 secondWarp = 20 days;
+        vm.warp(block.timestamp + secondWarp);
+
+        // 计算本次质押预期的解锁时间：当前时间 + 180 天
+        uint256 expectedUnlockTime = block.timestamp + 180 days;
+
+        vm.prank(alice);
+        staking.stake(stakeAmount, tierIndex);
+
+        // 【核心验证点 2】：验证解锁时间是否是“新鲜”计算的
+        // 确保 unlockTime 是基于“当前时间”重新开始的，而不是基于“旧时间”或者累加的
+        (,, uint256 newUnlockTime) = staking.userLocks(alice, tierIndex);
+
+        assertEq(newUnlockTime, expectedUnlockTime, "New unlockTime should be calculated from current timestamp");
+        // 逻辑验证：新的解锁时间必须远晚于第一次质押的解锁时间
+        assertTrue(newUnlockTime > unlockTime, "New unlock must be far in the future");
+    }
+
+    /// @dev 用例 17: 验证非法档位索引拦截
+    function test_RevertIf_InvalidTierIndex() public {
+        vm.prank(alice);
+        vm.expectRevert(StakingRewards.InvalidPeriodIndex.selector);
+        staking.stake(100e18, 4);
+    }
+
+    /// @dev 用例 18: 验证同档位加仓后，解锁时间是否按当前时间重新顺延
+    function test_CompoundLockTimeReset() public {
+        uint256 tierIndex = 1; // 90 days
+        vm.startPrank(alice);
+
+        // 第一次质押
+        staking.stake(100e18, tierIndex);
+        (,, uint256 firstUnlock) = staking.userLocks(alice, tierIndex);
+
+        // 快进 10 天
+        vm.warp(block.timestamp + 10 days);
+
+        // 第二次质押
+        staking.stake(500e18, tierIndex);
+        (,, uint256 secondUnlock) = staking.userLocks(alice, tierIndex);
+
+        // 验证：解锁时间应该是“当前时间 + 90天”，而不是“旧时间 + 90天”
+        assertEq(secondUnlock, block.timestamp + 90 days, "The unlock time should be reset according to the time of adding to the position.");
+        assertTrue(secondUnlock > firstUnlock, "The unlock time must be postponed to prevent arbitrage by adding positions at the end of the trading day.");
+
+        vm.stopPrank();
+    }
+
+    /// @dev 用例 19: 验证非管理员无法修改奖励周期
+    function test_RevertIf_NonOwnerSetsDuration() public {
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
+        staking.setRewardsDuration(7 days);
+    }
+
+    /// @dev 用例 20: 验证奖励周期结束后，收益停止增长
+    function test_RewardsStopAtPeriodFinish() public {
+        vm.prank(alice);
+        staking.stake(100e18, 0);
+
+        // 快进到奖励周期结束之后
+        vm.warp(staking.periodFinish() + 100 days);
+
+        uint256 rewardAtFinish = staking.earned(alice);
+        // 再快进 10 天
+        vm.warp(block.timestamp + 10 days);
+        // 收益应该保持不变
+        assertEq(staking.earned(alice), rewardAtFinish, "Reward should cease accumulating at the end of the period.");
+    }
+
+    /// @dev 用例 21: 验证用户在多个档位质押时，收益是否正确聚合
+    function test_EarnedAggregationAcrossTiers() public {
+        // Alice 在 Tier 0 (1x) 存 100 -> 权重 100
+        vm.prank(alice);
+        staking.stake(100e18, 0);
+
+        // Alice 在 Tier 3 (3x) 存 100 -> 权重 300
+        vm.prank(alice);
+        staking.stake(100e18, 3);
+
+        // 总权重应为 400
+        assertEq(staking.userTotalWeight(alice), 400e18);
+
+        vm.warp(block.timestamp + 10);
+        // 预期收益 = 10s * 100 rate = 1000 RTK (因为 Alice 是唯一质押者)
+        uint256 expect = 10 * staking.rewardRate();
+        assertEq(staking.earned(alice), expect);
     }
 }

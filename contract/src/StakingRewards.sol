@@ -15,6 +15,22 @@ contract StakingRewards is Ownable, ReentrancyGuard {
     uint256 public constant PRECISION = 1e18;
 
     // ============================================
+    // Type Definitions
+    // ============================================
+    /// @dev Configuration for a staking tier. Packed into a single slot (32 + 16 < 256 bits).
+    struct StakingPeriod {
+        uint32 duration; // Lock-up duration in seconds
+        uint16 rewardMultiplier; // Reward multiplier (e.g., 100 = 1x, 150 = 1.5x)
+    }
+
+    /// @dev User's position data for a specific tier.
+    struct UserLocks {
+        uint256 amount;
+        uint256 weight; // Logical weight used for reward calculation (amount * multiplier)
+        uint256 unlockTime; // Unix timestamp when the position becomes withdrawable
+    }
+
+    // ============================================
     // State Variables
     // ============================================
 
@@ -40,6 +56,18 @@ contract StakingRewards is Ownable, ReentrancyGuard {
     /// @dev The Unix timestamp marking the end of the current reward distribution period.
     uint256 public periodFinish;
 
+    /// @dev Array of all available staking tiers
+    StakingPeriod[] public stakingPeriods;
+
+    /// For O(1) complexity for reward distribution
+    /// @dev Global aggregate indices
+    uint256 public totalWeight;
+    /// @dev User-specific aggregate indices
+    mapping(address => uint256) public userTotalWeight;
+
+    /// @dev user address => Tier index => Position-specific data
+    mapping(address => mapping(uint256 => UserLocks)) public userLocks;
+
     /// @dev user address => last recorded rewardPerTokenStored value used for reward calculation
     mapping(address => uint256) public userRewardPerTokenPaid;
 
@@ -47,15 +75,15 @@ contract StakingRewards is Ownable, ReentrancyGuard {
     mapping(address => uint256) public rewards;
 
     /// @dev total staked
-    uint256 public _totalSupply;
+    // uint256 public _totalSupply;
     /// @dev user address => staked amount
-    mapping(address => uint256) public _balances;
+    // mapping(address => uint256) public _balances;
 
     // ============================================
     // Events
     // ============================================
-    event Staked(address indexed user, uint256 amount);
-    event WithDrawn(address indexed user, uint256 amount);
+    event Staked(address indexed user, uint256 amount, uint256 periodIndex);
+    event WithDrawn(address indexed user, uint256 amount, uint256 periodIndex);
     event RewardPaid(address indexed user, uint256 amount);
 
     // ============================================
@@ -68,6 +96,8 @@ contract StakingRewards is Ownable, ReentrancyGuard {
     error InsufficientBalance();
     error InsufficientRewardBalance();
     error RewardPeriodActive();
+    error InvalidPeriodIndex();
+    error Locked(uint256 availableAt);
 
     // ============================================
     // Modifiers
@@ -96,40 +126,95 @@ contract StakingRewards is Ownable, ReentrancyGuard {
 
         stakingToken = IERC20(_stakingToken);
         rewardToken = IERC20(_rewardToken);
+
+        // Initialize 4 tiers of StakingPeriod
+        // tier 0: 30 days, 1x
+        stakingPeriods.push(StakingPeriod({duration: 30 days, rewardMultiplier: 100}));
+        // tier 1: 90 days, 1.5x
+        stakingPeriods.push(StakingPeriod({duration: 90 days, rewardMultiplier: 150}));
+        // tier 2: 180 days, 2x
+        stakingPeriods.push(StakingPeriod({duration: 180 days, rewardMultiplier: 200}));
+        // tier 3: 365 days, 3x
+        stakingPeriods.push(StakingPeriod({duration: 365 days, rewardMultiplier: 300}));
     }
 
     // ============================================
     // Staking Integration
     // ============================================
 
-    function stake(uint256 amount) external nonReentrant updateReward(msg.sender) {
+    function stake(uint256 amount, uint256 periodIndex) external nonReentrant updateReward(msg.sender) {
         if (amount == 0) {
             revert ZeroAmount();
         }
 
-        _totalSupply += amount;
-        _balances[msg.sender] += amount;
+        if (periodIndex >= stakingPeriods.length) {
+            revert InvalidPeriodIndex();
+        }
 
+        // 1. Get stakingPeriod (one-time SLOAD)
+        StakingPeriod memory stakingPeriod = stakingPeriods[periodIndex];
+
+        // 2. Calculate logical weights
+        uint256 weightAdded = amount * stakingPeriod.rewardMultiplier / 100;
+
+        // 3. Update global and user-specific aggregate indices
+        totalWeight += weightAdded;
+        userTotalWeight[msg.sender] += weightAdded;
+
+        // 4. Update specific positions
+        UserLocks storage lockedBalances = userLocks[msg.sender][periodIndex];
+        // Add amount/weight to positions at the same amount level
+        lockedBalances.amount += amount;
+        lockedBalances.weight += weightAdded;
+        // Reset timestamp
+        lockedBalances.unlockTime = block.timestamp + stakingPeriod.duration;
+
+        // 5. Transfer
         stakingToken.safeTransferFrom(msg.sender, address(this), amount);
 
-        emit Staked(msg.sender, amount);
+        emit Staked(msg.sender, amount, periodIndex);
     }
 
-    function withdraw(uint256 amount) external nonReentrant updateReward(msg.sender) {
+    function withdraw(uint256 amount, uint256 periodIndex) external nonReentrant updateReward(msg.sender) {
         if (amount == 0) {
             revert ZeroAmount();
         }
 
-        if (_balances[msg.sender] < amount) {
+        if (periodIndex >= stakingPeriods.length) {
+            revert InvalidPeriodIndex();
+        }
+
+        UserLocks storage lockedBalances = userLocks[msg.sender][periodIndex];
+        if (block.timestamp < lockedBalances.unlockTime) {
+            revert Locked(lockedBalances.unlockTime);
+        }
+
+        if (lockedBalances.amount < amount) {
             revert InsufficientBalance();
         }
 
-        _totalSupply -= amount;
-        _balances[msg.sender] -= amount;
+        // 1. Get stakingPeriod (one-time SLOAD)
+        StakingPeriod memory stakingPeriod = stakingPeriods[periodIndex];
+        // 2. Calculate the weight that needs to be removed in this withdrawal.
+        uint256 weightRemoved = amount * stakingPeriod.rewardMultiplier / 100;
 
+        // 3. Update global and user-specific aggregate indices
+        totalWeight -= weightRemoved;
+        userTotalWeight[msg.sender] -= weightRemoved;
+
+        // 4. Update specific positions
+        // Remove amount/weight from positions at the same amount level
+        if (lockedBalances.amount == amount) {
+            delete userLocks[msg.sender][periodIndex];
+        } else {
+            lockedBalances.amount -= amount;
+            lockedBalances.weight -= weightRemoved;
+        }
+
+        // 5. Transfer
         stakingToken.safeTransfer(msg.sender, amount);
 
-        emit WithDrawn(msg.sender, amount);
+        emit WithDrawn(msg.sender, amount, periodIndex);
     }
 
     function getReward() external nonReentrant updateReward(msg.sender) {
@@ -145,17 +230,19 @@ contract StakingRewards is Ownable, ReentrancyGuard {
     // View Functions
     // ============================================
     function rewardPerToken() public view returns (uint256) {
-        if (_totalSupply == 0) {
+        if (totalWeight == 0) {
             return rewardPerTokenStored;
         }
 
         return
             rewardPerTokenStored
-                + (rewardRate * (lastTimeRewardApplicable() - lastUpdateTime) * PRECISION / _totalSupply);
+                + (rewardRate * (lastTimeRewardApplicable() - lastUpdateTime) * PRECISION / totalWeight);
     }
 
     function earned(address account) public view returns (uint256) {
-        return _balances[account] * (rewardPerToken() - userRewardPerTokenPaid[account]) / PRECISION + rewards[account];
+        return
+            userTotalWeight[account] * (rewardPerToken() - userRewardPerTokenPaid[account]) / PRECISION
+                + rewards[account];
     }
 
     function lastTimeRewardApplicable() public view returns (uint256) {
