@@ -56,6 +56,9 @@ contract StakingRewards is Ownable, ReentrancyGuard {
     /// @dev The Unix timestamp marking the end of the current reward distribution period.
     uint256 public periodFinish;
 
+    /// @dev Accumulate unallocated rewards during periods of inactivity.
+    uint256 public undistributedRewards;
+
     /// @dev Array of all available staking tiers
     StakingPeriod[] public stakingPeriods;
 
@@ -97,6 +100,7 @@ contract StakingRewards is Ownable, ReentrancyGuard {
     error InsufficientRewardBalance();
     error RewardPeriodActive();
     error InvalidPeriodIndex();
+    error InvalidRewardsDuration();
     error Locked(uint256 availableAt);
 
     // ============================================
@@ -104,9 +108,8 @@ contract StakingRewards is Ownable, ReentrancyGuard {
     // ============================================
     modifier updateReward(address account) {
         // Global updates
-        rewardPerTokenStored = rewardPerToken();
-        lastUpdateTime = lastTimeRewardApplicable();
-
+        _updateGlobalRewards();
+        
         // Personal updates
         if (account != address(0)) {
             rewards[account] = earned(account);
@@ -126,6 +129,8 @@ contract StakingRewards is Ownable, ReentrancyGuard {
 
         stakingToken = IERC20(_stakingToken);
         rewardToken = IERC20(_rewardToken);
+
+        rewardsDuration = 7 days;
 
         // Initialize 4 tiers of StakingPeriod
         // tier 0: 30 days, 1x
@@ -245,8 +250,27 @@ contract StakingRewards is Ownable, ReentrancyGuard {
                 + rewards[account];
     }
 
+    // Ensure once the reward period ends, the calculation must stop at the endpoint.
     function lastTimeRewardApplicable() public view returns (uint256) {
         return block.timestamp < periodFinish ? block.timestamp : periodFinish;
+    }
+
+    // ============================================
+    // Internal Functions
+    // ============================================
+    function _updateGlobalRewards() internal {
+        uint256 applicable = lastTimeRewardApplicable();
+        uint256 dt = applicable - lastUpdateTime;
+
+        if (dt > 0) {
+            if (totalWeight == 0) { // No stake
+                undistributedRewards += dt * rewardRate;
+            } else {
+                rewardPerTokenStored += (dt * rewardRate * PRECISION) / totalWeight;
+            }
+
+            lastUpdateTime = applicable;
+        }
     }
 
     // ============================================
@@ -257,16 +281,23 @@ contract StakingRewards is Ownable, ReentrancyGuard {
             revert RewardPeriodActive();
         }
 
+        if (_rewardsDuration == 0) {
+            revert InvalidRewardsDuration();
+        }
+
         rewardsDuration = _rewardsDuration;
     }
 
     function notifyRewardAmount(uint256 amount) external onlyOwner updateReward(address(0)) {
-        if (block.timestamp >= periodFinish) {
-            rewardRate = amount / rewardsDuration;
-        } else {
-            uint256 remaining = (periodFinish - block.timestamp) * rewardRate;
-            rewardRate = (remaining + amount) / rewardsDuration;
+        if (rewardsDuration == 0) {
+            revert InvalidRewardsDuration();
         }
+
+        uint256 remaining = 0;
+        if (block.timestamp < periodFinish) {
+            remaining = (periodFinish - block.timestamp) * rewardRate;
+        }
+        rewardRate = (amount + remaining + undistributedRewards) / rewardsDuration;
 
         if (rewardRate == 0) {
             revert ZeroRewardRate();
@@ -277,6 +308,7 @@ contract StakingRewards is Ownable, ReentrancyGuard {
             revert InsufficientRewardBalance();
         }
 
+        undistributedRewards = 0;
         lastUpdateTime = block.timestamp;
         periodFinish = block.timestamp + rewardsDuration;
     }

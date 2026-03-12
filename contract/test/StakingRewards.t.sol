@@ -326,7 +326,14 @@ contract StakingRewardsTest is Test {
         vm.warp(block.timestamp + 3.5 days);
 
         // 此时剩余奖励应该还有一半：100 * 3.5 days
-        uint256 remaining = (staking.periodFinish() - block.timestamp) * staking.rewardRate();
+        uint256 oldRate = staking.rewardRate();
+        uint256 remaining = 0;
+        if (block.timestamp < staking.periodFinish()) {
+            remaining = (staking.periodFinish() - block.timestamp) * oldRate;
+        }
+        uint256 applicable = staking.lastTimeRewardApplicable();
+        uint256 elapsed = applicable - staking.lastUpdateTime();
+        uint256 undistributed = elapsed * oldRate;
 
         // 3. 管理员再次注入一笔新的奖励
         uint256 newAmount = 7000e18;
@@ -334,8 +341,9 @@ contract StakingRewardsTest is Test {
         staking.notifyRewardAmount(newAmount);
 
         // 4. 验证新流速是否符合公式：(剩余 + 新增) / 7天
-        uint256 expectedRate = (remaining + newAmount) / staking.rewardsDuration();
+        uint256 expectedRate = (remaining + newAmount + undistributed) / staking.rewardsDuration();
         assertEq(staking.rewardRate(), expectedRate, "Reward rate should merge smoothly");
+        assertEq(staking.undistributedRewards(), 0, "undistributedRewards should be empty");
     }
 
     /// @dev 用例11：setRewardsDuration 报错路径
@@ -499,4 +507,125 @@ contract StakingRewardsTest is Test {
         uint256 expect = 10 * staking.rewardRate();
         assertEq(staking.earned(alice), expect);
     }
+
+    /// @dev 用例22 Rollover: no one can back-claim rewards from a zero-weight window
+    function test_Rollover_NoStake_UserCannotBackClaim() public {
+        // T0 -> T+1day, no staker
+        vm.warp(block.timestamp + 1 days);
+
+        // Alice stakes after zero-weight window
+        vm.prank(alice);
+        staking.stake(100e18, 0);
+
+        // Immediately after staking, should not include previous zero-weight window
+        assertEq(staking.earned(alice), 0, "Should not back-claim zero-weight window rewards");
+
+        // Move 10s forward, now Alice should earn normally
+        vm.warp(block.timestamp + 10);
+        assertEq(staking.earned(alice), 10 * staking.rewardRate(), "Should accrue after stake time only");
+    }
+
+    /// @dev 用例23 Rollover: undistributed rewards accumulate across multiple zero-weight windows
+    function test_Rollover_AccumulatesAcrossMultipleZeroWeightWindows() public {
+        // Window A: 空仓 1 天，产生的奖励应进入未分配池
+        vm.warp(block.timestamp + 1 days);
+
+        // 通过 notify(0) 触发全局结算，把 Window A 的未分配奖励并入新周期并清零
+        staking.notifyRewardAmount(0);
+        uint256 a = staking.undistributedRewards();
+        // 当前实现中 notify 会立刻合并并清空未分配池
+        assertEq(a, 0, "If notify merges queued rewards, this should be zero after notify");
+
+        // Window B 前插入一段“有质押窗口”，确保未分配只来自空仓时间
+        vm.prank(alice);
+        staking.stake(100e18, 0);
+        // 等锁仓结束后提现，回到 totalWeight == 0
+        vm.warp(block.timestamp + 30 days + 1);
+        vm.prank(alice);
+        staking.withdraw(100e18, 0);
+
+        // Window B: 再空仓 1 天，产生新的未分配奖励
+        vm.warp(block.timestamp + 1 days);
+
+        // 按合约真实逻辑计算期望：remaining + newAmount + undistributed
+        uint256 oldRate = staking.rewardRate();
+        uint256 remaining = 0;
+        if (block.timestamp < staking.periodFinish()) {
+            remaining = (staking.periodFinish() - block.timestamp) * oldRate;
+        }
+        // 必须用 lastTimeRewardApplicable() 截断到 periodFinish
+        uint256 undistributed = (staking.lastTimeRewardApplicable() - staking.lastUpdateTime()) * oldRate;
+
+        uint256 newAmount = 1000e18;
+        rewardToken.mint(address(staking), newAmount);
+        staking.notifyRewardAmount(newAmount);
+
+        uint256 expectedRate = (remaining + newAmount + undistributed) / staking.rewardsDuration();
+        assertEq(staking.rewardRate(), expectedRate, "Rollover should include latest zero-weight window");
+        assertEq(staking.undistributedRewards(), 0, "Queued rewards should be consumed");
+    }
+
+    /// @dev 用例24 Rollover: no double counting after first notify consumed queued rewards
+    function test_Rollover_NoDoubleCount_AfterNotifyTwice() public {
+        // 先空仓一段时间，制造可被 rollover 的未分配奖励
+        vm.warp(block.timestamp + 1 days);
+
+        // 第一次 notify：应把 undistributed 合并进 rewardRate
+        uint256 oldRate1 = staking.rewardRate();
+        uint256 remaining1 = 0;
+        if (block.timestamp < staking.periodFinish()) {
+            remaining1 = (staking.periodFinish() - block.timestamp) * oldRate1;
+        }
+        uint256 applicable1 = staking.lastTimeRewardApplicable();
+        uint256 undistributed1 = (applicable1 - staking.lastUpdateTime()) * oldRate1;
+        
+        uint256 amt1 = 1000e18;
+        rewardToken.mint(address(staking), amt1);
+        staking.notifyRewardAmount(amt1);
+
+        uint256 expected1 = (remaining1 + amt1 + undistributed1) / staking.rewardsDuration();
+        assertEq(staking.rewardRate(), expected1, "First notify should consume queued rewards");
+        assertEq(staking.undistributedRewards(), 0);
+
+        // 立即第二次 notify：elapsed ~= 0，不应重复合并上一次已消费的 undistributed
+        uint256 oldRate2 = staking.rewardRate();
+        uint256 remaining2 = 0;
+        if (block.timestamp < staking.periodFinish()) {
+            remaining2 = (staking.periodFinish() - block.timestamp) * oldRate2;
+        }
+        uint256 applicable2 = staking.lastTimeRewardApplicable();
+        uint256 undistributed2 = (applicable2 - staking.lastUpdateTime()) * oldRate2;
+        assertEq(undistributed2, 0, "undistributed2 should be 0 because elapsed2 is 0");
+
+        uint256 amt2 = 500e18;
+        rewardToken.mint(address(staking), amt2);
+        staking.notifyRewardAmount(amt2);
+
+        uint256 expected2 = (remaining2 + amt2 + undistributed2) / staking.rewardsDuration();
+        assertEq(staking.rewardRate(), expected2, "Second notify must not double-count prior queued rewards");
+        assertEq(staking.undistributedRewards(), 0);
+    }
+
+    /// @dev 用例25 Rollover: active-period notify includes remaining + newAmount + queued
+    function test_Rollover_WithActivePeriodRemainingAndNewAmount() public {
+        // Keep zero-weight, advance half period
+        vm.warp(block.timestamp + 3.5 days);
+
+        uint256 oldRate = staking.rewardRate();
+        uint256 remaining = 0;
+        if (block.timestamp < staking.periodFinish()) {
+            remaining = (staking.periodFinish() - block.timestamp) * oldRate;
+        }
+        uint256 applicable = staking.lastTimeRewardApplicable();
+        uint256 undistributed = (applicable - staking.lastUpdateTime()) * oldRate;
+    
+        uint256 newAmount = 7000e18;
+        rewardToken.mint(address(staking), newAmount);
+        staking.notifyRewardAmount(newAmount);
+
+        uint256 expectedRate = (remaining + newAmount + undistributed) / staking.rewardsDuration();
+        assertEq(staking.rewardRate(), expectedRate, "Rate must merge remaining + new + rollover");
+        assertEq(staking.undistributedRewards(), 0, "Rollover pool should be cleared after merge");
+    }
+
 }

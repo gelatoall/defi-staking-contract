@@ -25,7 +25,7 @@ In scope:
 ### High-Level Model
 
 The system tracks two layers of state:
-- Global reward index state (`rewardPerTokenStored`, `lastUpdateTime`, `rewardRate`, `periodFinish`)
+- Global reward index state (`rewardPerTokenStored`, `lastUpdateTime`, `rewardRate`, `periodFinish`, `undistributedRewards`)
 - User state (`userTotalWeight`, `userRewardPerTokenPaid`, `rewards`, and per-tier `userLocks`)
 
 Each stake updates user and global weight. Reward accrual uses an index-delta model:
@@ -80,10 +80,24 @@ earned(user) = userTotalWeight[user] *
                + rewards[user]
 ```
 
+### Boundary Conditions
+
+- `totalWeight == 0`:
+  `rewardPerToken()` returns `rewardPerTokenStored` directly, so the global reward index does not increase while nobody is staked. Any emitted rewards during this window are accumulated in `undistributedRewards` and only get scheduled when the owner calls `notifyRewardAmount(...)`.
+
+- `periodFinish == 0` (initial deployment state):
+  The initial reward period has not started yet. `setRewardsDuration(...)` is allowed as long as `block.timestamp > periodFinish` (true in normal environments), so owner can override the constructor default before first funding.
+
+- `rewardsDuration == 0` safety:
+  `notifyRewardAmount(...)` explicitly checks `rewardsDuration == 0` and reverts with `InvalidRewardsDuration()`, preventing division-by-zero on `amount / rewardsDuration`.
+
+- Reward accumulation after period end:
+  `lastTimeRewardApplicable()` uses `min(block.timestamp, periodFinish)`, so reward growth stops once `periodFinish` is reached.
+
 ### State Sync Strategy (`updateReward` modifier)
 
 Before any state-changing action that affects rewards:
-1. Sync global index and timestamp
+1. Sync global index and timestamp via `_updateGlobalRewards()` (handles `undistributedRewards` when `totalWeight == 0`)
 2. If account is provided, realize user pending rewards into `rewards[user]`
 3. Move `userRewardPerTokenPaid[user]` to latest index
 
@@ -140,10 +154,12 @@ Interaction:
 #### setRewardsDuration
 - owner only
 - only after current period is finished (`block.timestamp > periodFinish`)
+- `_rewardsDuration` must be non-zero, otherwise revert with `InvalidRewardsDuration()`
 
 #### notifyRewardAmount(amount)
 - owner only
 - sync global index first
+- require `rewardsDuration > 0` (`InvalidRewardsDuration()` if not)
 - if previous period ended: `rewardRate = amount / rewardsDuration`
 - if active: blend remaining rewards and new amount:
 
@@ -155,6 +171,7 @@ rewardRate = (remaining + amount) / rewardsDuration
 - reject zero rate
 - reject if contract balance cannot cover `rewardRate * rewardsDuration`
 - set `lastUpdateTime = now`, `periodFinish = now + rewardsDuration`
+- clear `undistributedRewards` after it is merged into the new schedule
 
 ### Events and Errors
 
@@ -166,12 +183,67 @@ Events:
 Custom errors cover:
 - zero address/amount/rate
 - invalid period index
+- invalid reward duration (`InvalidRewardsDuration`)
 - lock violation (`Locked(unlockTime)`)
 - insufficient stake balance
 - insufficient reward pool balance
 - active-period duration changes
 
+## Security Considerations
 
+This contract includes multiple built-in security mechanisms:
+
+- `ReentrancyGuard` + `nonReentrant`:
+  Applied to external state-changing user functions (`stake`, `withdraw`, `getReward`) to reduce reentrancy risk around token transfers and state mutations.
+
+- `SafeERC20`:
+  All token transfers use `safeTransfer` / `safeTransferFrom`, which improves compatibility with non-standard ERC20 implementations and avoids silent transfer failures.
+
+- `Ownable`:
+  Administrative functions (`setRewardsDuration`, `notifyRewardAmount`) are restricted with `onlyOwner`, preventing unauthorized reward schedule changes.
+
+- Defensive input/state checks:
+  The contract uses explicit validation and custom errors for invalid amounts, invalid tier index, lock violations, insufficient balances, and reward-funding insufficiency.
+
+- Checks-effects-interactions pattern in reward claim:
+  In `getReward`, pending rewards are cleared before external token transfer, reducing the chance of double-claim behavior during unexpected external call flows.
+
+## Deployment Checklist
+
+Use the following initialization order after deployment:
+
+1. Verify constructor inputs:
+   Confirm `stakingToken` and `rewardToken` are non-zero addresses and point to the intended ERC20 contracts.
+
+2. (Optional) Override reward duration:
+   Constructor sets a default `rewardsDuration = 7 days`. If a different duration is needed, owner can call `setRewardsDuration(...)` before first funding.
+
+3. Fund reward pool:
+   Transfer enough `rewardToken` into the staking contract address.
+
+4. Start reward program:
+   Owner calls `notifyRewardAmount(amount)` to set `rewardRate` and `periodFinish`.
+
+5. User onboarding:
+   Users approve `stakingToken` allowance, then call `stake(...)`.
+
+Important constraint:
+- `notifyRewardAmount(...)` requires `rewardsDuration > 0`. With the current implementation this is satisfied by default (`7 days`), but setting duration to zero is disallowed and reverts with `InvalidRewardsDuration()`.
+
+### Initialization Safety Requirement
+
+- Current behavior:
+  `rewardsDuration` is initialized to `7 days` in the constructor.
+
+- Init sequence:
+  Owner may call `setRewardsDuration(...)` to override the default, then fund rewards and call `notifyRewardAmount(...)`.
+
+- Failure mode if sequence is violated:
+  If `rewardsDuration` is ever zero (misconfiguration in future refactors), `notifyRewardAmount(...)` reverts early with `InvalidRewardsDuration()` instead of reaching division.
+
+Operational checks:
+- Before each `notifyRewardAmount(...)`, ensure contract `rewardToken` balance can cover `rewardRate * rewardsDuration` (the function enforces this).
+- `setRewardsDuration(...)` can only be changed after current period ends (`block.timestamp > periodFinish`).
 
 ## Testing Strategy (Current Coverage)
 
@@ -183,6 +255,7 @@ Custom errors cover:
 - invalid input paths (zero amount, invalid tier, zero address ctor)
 - reward claiming atomicity (transfer + state reset)
 - reward-period continuity on re-funding
+- rollover behavior: zero-weight windows do not back-pay, merge only once, and are included in notify formula
 - non-owner admin access denial
 - reward accrual stops after period end
 - aggregation across multiple tiers
