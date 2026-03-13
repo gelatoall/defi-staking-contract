@@ -26,7 +26,7 @@ In scope:
 
 The system tracks two layers of state:
 - Global reward index state (`rewardPerTokenStored`, `lastUpdateTime`, `rewardRate`, `periodFinish`, `undistributedRewards`)
-- User state (`userTotalWeight`, `userRewardPerTokenPaid`, `rewards`, and per-tier `userLocks`)
+- User state (`userTotalWeight`, `userRewardPerTokenPaid`, `rewards`, and per-tier `userLocks`, `weightRemainder`)
 
 Each stake updates user and global weight. Reward accrual uses an index-delta model:
 - Global index grows with elapsed time and `rewardRate`
@@ -44,6 +44,10 @@ This avoids iterating over users.
 - `amount`
 - `weight`
 - `unlockTime`
+
+`weightRemainder` (by `user + periodIndex`):
+- Stores the remainder of `amount * multiplier` under a base-100 weight scheme.
+- Used to accumulate fractional weights across multiple small stakes.
 
 Default tiers at construction:
 - Tier 0: 30 days, 1x
@@ -119,7 +123,8 @@ Checks:
 - valid tier index
 
 Effects:
-- compute `weightAdded = amount * multiplier / 100`
+- compute `raw = amount * multiplier + weightRemainder[user][periodIndex]`
+- compute `weightAdded = raw / 100` and update `weightRemainder[user][periodIndex] = raw % 100`
 - increase `totalWeight` and `userTotalWeight[user]`
 - increase per-tier `amount` and `weight`
 - reset `unlockTime = now + tier.duration`
@@ -137,7 +142,7 @@ Checks:
 - sufficient tier principal
 
 Effects:
-- compute `weightRemoved = amount * multiplier / 100`
+- compute `weightRemoved = locked.weight * amount / locked.amount` (proportional removal)
 - decrease global/user weights
 - full withdraw: delete tier slot
 - partial withdraw: decrement tier `amount` and `weight`
@@ -256,6 +261,7 @@ Operational checks:
 - reward claiming atomicity (transfer + state reset)
 - reward-period continuity on re-funding
 - rollover behavior: zero-weight windows do not back-pay, merge only once, and are included in notify formula
+- weight remainder behavior: small-stake precision is accumulated per user/tier; withdrawals remove weight proportionally
 - non-owner admin access denial
 - reward accrual stops after period end
 - aggregation across multiple tiers

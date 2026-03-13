@@ -628,4 +628,90 @@ contract StakingRewardsTest is Test {
         assertEq(staking.undistributedRewards(), 0, "Rollover pool should be cleared after merge");
     }
 
+    /// @dev 余数累计：同用户同档位小额多次质押能凑整
+    function test_RemainderAccumulation_SameUserSameTier() public {
+        uint256 tier = 1;
+
+        // 第一次质押 1，raw=150 -> weight=1, remainder=50
+        vm.prank(alice);
+        staking.stake(1, tier);
+
+        (uint256 am1, uint256 w1, ) = staking.userLocks(alice, tier);
+        assertEq(am1, 1, "amount after first tiny stake");
+        assertEq(w1, 1, "weight after first tiny stake");
+        assertEq(staking.weightRemainder(alice, tier), 50, "remainder after first stake");
+
+        // 第二次质押 1，raw=1*150 + 50 = 200 -> weight=2, remainder=0
+        vm.prank(alice);
+        staking.stake(1, tier);
+        (uint256 am2, uint256 w2, ) = staking.userLocks(alice, tier);
+        assertEq(am2, 2, "amount after second tiny stake, amount should increase by 1 on second stake");
+        assertEq(w2, 3, "weight after second tiny stake, weight should increase by 2 on second stake");
+        assertEq(staking.weightRemainder(alice, tier), 0, "remainder should be consumed");
+    }
+
+    /// @dev 余数隔离：不同档位余数互不影响
+    function test_RemainderIsolation_DifferentTiers() public {
+        vm.prank(alice);
+        staking.stake(1, 1); // remainder 50
+        vm.prank(alice);
+        staking.stake(1, 0); // remainder 0
+
+        assertEq(staking.weightRemainder(alice, 1), 50);
+        assertEq(staking.weightRemainder(alice, 0), 0);
+    }
+
+    /// @dev 余数隔离：不同用户余数互不影响
+    function test_RemainderIsolation_DifferentUsers() public {
+        vm.prank(alice);
+        staking.stake(1, 1); // remainder 50
+        vm.prank(bob);
+        staking.stake(1, 1); // remainder 50
+
+        assertEq(staking.weightRemainder(alice, 1), 50);
+        assertEq(staking.weightRemainder(bob, 1), 50);
+    }
+
+    /// @dev 部分提现：按仓位比例扣减权重
+    function test_Withdraw_ProportionalWeightRemoval_WithRemainder() public {
+        uint256 tier = 1; // 1.5x
+        vm.prank(alice);
+        staking.stake(3, tier); // raw=450 -> weight=4, remainder=50
+
+        // 解锁
+        (uint256 oldAmount, uint256 oldWeight, uint256 unlock) = staking.userLocks(alice, tier);
+        assertEq(oldAmount, 3, "oldAmount should be 3");
+        assertEq(oldWeight, 4, "oldWeight should be 4");
+        assertEq(staking.weightRemainder(alice, tier), 50, "oldRemainder should be 50");
+        
+        vm.warp(unlock + 1);
+
+        // 提现 1/3
+        vm.prank(alice);
+        staking.withdraw(1, tier);
+
+        (uint256 newAmount, uint256 newWeight,) = staking.userLocks(alice, tier);
+        assertEq(newAmount, 2, "newAmount should be 2");
+        // 原 weight=4，按比例扣 1/3 => remove 1 (floor), remaining 3
+        assertEq(newWeight, 3, "newWeight should be 3");
+        assertEq(staking.userTotalWeight(alice), 3);
+    }
+
+    function test_Withdraw_FullExit_ClearsRemainder() public {
+        uint256 tier = 1;
+        vm.prank(alice);
+        staking.stake(1, tier);
+
+        (, , uint256 unlock) = staking.userLocks(alice, tier);
+        vm.warp(unlock + 1);
+
+        vm.prank(alice);
+        staking.withdraw(1, tier);
+
+         (uint256 amount, uint256 weight, uint256 unlockTime) = staking.userLocks(alice, tier);
+        assertEq(amount, 0);
+        assertEq(weight, 0);
+        assertEq(unlockTime, 0);
+        assertEq(staking.weightRemainder(alice, tier), 0);
+    }
 }

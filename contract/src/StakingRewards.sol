@@ -71,6 +71,9 @@ contract StakingRewards is Ownable, ReentrancyGuard {
     /// @dev user address => Tier index => Position-specific data
     mapping(address => mapping(uint256 => UserLocks)) public userLocks;
 
+    /// @dev user address => Tier index => User weight remainder
+    mapping(address => mapping(uint256 => uint256)) public weightRemainder;
+
     /// @dev user address => last recorded rewardPerTokenStored value used for reward calculation
     mapping(address => uint256) public userRewardPerTokenPaid;
 
@@ -160,7 +163,9 @@ contract StakingRewards is Ownable, ReentrancyGuard {
         StakingPeriod memory stakingPeriod = stakingPeriods[periodIndex];
 
         // 2. Calculate logical weights
-        uint256 weightAdded = amount * stakingPeriod.rewardMultiplier / 100;
+        uint256 raw = amount * stakingPeriod.rewardMultiplier + weightRemainder[msg.sender][periodIndex];
+        uint256 weightAdded = raw / 100;
+        weightRemainder[msg.sender][periodIndex] = raw % 100;
 
         // 3. Update global and user-specific aggregate indices
         totalWeight += weightAdded;
@@ -201,7 +206,7 @@ contract StakingRewards is Ownable, ReentrancyGuard {
         // 1. Get stakingPeriod (one-time SLOAD)
         StakingPeriod memory stakingPeriod = stakingPeriods[periodIndex];
         // 2. Calculate the weight that needs to be removed in this withdrawal.
-        uint256 weightRemoved = amount * stakingPeriod.rewardMultiplier / 100;
+        uint256 weightRemoved = amount * lockedBalances.weight / lockedBalances.amount;
 
         // 3. Update global and user-specific aggregate indices
         totalWeight -= weightRemoved;
@@ -211,6 +216,7 @@ contract StakingRewards is Ownable, ReentrancyGuard {
         // Remove amount/weight from positions at the same amount level
         if (lockedBalances.amount == amount) {
             delete userLocks[msg.sender][periodIndex];
+            delete weightRemainder[msg.sender][periodIndex];
         } else {
             lockedBalances.amount -= amount;
             lockedBalances.weight -= weightRemoved;
