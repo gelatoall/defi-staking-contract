@@ -746,4 +746,47 @@ contract StakingRewardsTest is Test {
         vm.prank(alice);
         staking.stake(1, 0);
     }
+
+    function test_PauseBlocksStake() public {
+        vm.prank(staking.owner());
+        staking.pause();
+
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
+        staking.stake(100e18, 0);
+    }
+
+    function test_PauseBlocksWithdraw() public {
+        vm.prank(alice);
+        staking.stake(100e18, 0);
+
+        vm.prank(staking.owner());
+        staking.pause();
+
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
+        staking.withdraw(1e18, 0);
+    }
+
+    function test_PauseBlocksGetReward() public {
+        vm.prank(alice);
+        staking.stake(100e18, 0);
+
+        vm.prank(staking.owner());
+        staking.pause();
+
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
+        staking.getReward();
+    }
+
+    function test_UnpauseRestores() public {
+        vm.prank(staking.owner());
+        staking.pause();
+        vm.prank(staking.owner());
+        staking.unpause();
+
+        vm.prank(alice);
+        staking.stake(100e18, 0);
+    }
 }

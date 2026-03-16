@@ -121,6 +121,7 @@ Input: `amount`, `periodIndex`
 Checks:
 - `amount > 0`
 - if `minStakeAmount != 0`, require `amount >= minStakeAmount`
+- `whenNotPaused` (staking is disabled during emergency pause)
 - valid tier index
 
 Effects:
@@ -139,6 +140,7 @@ Input: `amount`, `periodIndex`
 Checks:
 - `amount > 0`
 - valid tier index
+- `whenNotPaused` (withdrawals are disabled during emergency pause)
 - `now >= unlockTime`
 - sufficient tier principal
 
@@ -154,6 +156,7 @@ Interaction:
 #### Claim Reward
 - read `rewards[user]`
 - if non-zero: set to zero first, then transfer reward token
+- guarded by `whenNotPaused` (claims are disabled during emergency pause)
 
 ### Admin Flows
 
@@ -165,6 +168,11 @@ Interaction:
 #### setMinStakeAmount(_min)
 - owner only
 - `_min = 0` disables the minimum-stake constraint
+
+#### pause / unpause
+- owner only
+- `pause()` disables `stake`, `withdraw`, and `getReward`
+- `unpause()` re-enables those flows
 
 #### notifyRewardAmount(amount)
 - owner only
@@ -189,6 +197,9 @@ Events:
 - `Staked(user, amount, periodIndex)`
 - `WithDrawn(user, amount, periodIndex)`
 - `RewardPaid(user, amount)`
+- `SetMinStakeAmount(amount)`
+- `SetRewardsDuration(duration)`
+- `NotifyRewardAmount(amount)`
 
 Custom errors cover:
 - zero address/amount/rate
@@ -212,6 +223,9 @@ This contract includes multiple built-in security mechanisms:
 
 - `Ownable`:
   Administrative functions (`setRewardsDuration`, `notifyRewardAmount`) are restricted with `onlyOwner`, preventing unauthorized reward schedule changes.
+
+- `Pausable`:
+  `stake`, `withdraw`, and `getReward` are gated by `whenNotPaused`, allowing emergency stop in case of incidents.
 
 - Defensive input/state checks:
   The contract uses explicit validation and custom errors for invalid amounts, invalid tier index, lock violations, insufficient balances, and reward-funding insufficiency.
@@ -265,6 +279,7 @@ Operational checks:
 - lock enforcement and insufficient-balance reverts
 - invalid input paths (zero amount, invalid tier, zero address ctor)
 - min stake amount enforcement and owner-only setter
+- pause/unpause behavior for stake, withdraw, and claim
 - reward claiming atomicity (transfer + state reset)
 - reward-period continuity on re-funding
 - rollover behavior: zero-weight windows do not back-pay, merge only once, and are included in notify formula

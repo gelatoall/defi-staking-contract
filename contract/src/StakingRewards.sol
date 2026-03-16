@@ -5,8 +5,9 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol";
 
-contract StakingRewards is Ownable, ReentrancyGuard {
+contract StakingRewards is Ownable, ReentrancyGuard, Pausable {
     using SafeERC20 for IERC20;
 
     // ============================================
@@ -94,6 +95,9 @@ contract StakingRewards is Ownable, ReentrancyGuard {
     event Staked(address indexed user, uint256 amount, uint256 periodIndex);
     event WithDrawn(address indexed user, uint256 amount, uint256 periodIndex);
     event RewardPaid(address indexed user, uint256 amount);
+    event SetMinStakeAmount(uint256 amount);
+    event SetRewardsDuration(uint256 duration);
+    event NotifyRewardAmount(uint256 amount);
 
     // ============================================
     // Custom Errors
@@ -154,7 +158,7 @@ contract StakingRewards is Ownable, ReentrancyGuard {
     // Staking Integration
     // ============================================
 
-    function stake(uint256 amount, uint256 periodIndex) external nonReentrant updateReward(msg.sender) {
+    function stake(uint256 amount, uint256 periodIndex) external nonReentrant whenNotPaused updateReward(msg.sender) {
         if (amount == 0) {
             revert ZeroAmount();
         }
@@ -193,7 +197,7 @@ contract StakingRewards is Ownable, ReentrancyGuard {
         emit Staked(msg.sender, amount, periodIndex);
     }
 
-    function withdraw(uint256 amount, uint256 periodIndex) external nonReentrant updateReward(msg.sender) {
+    function withdraw(uint256 amount, uint256 periodIndex) external nonReentrant whenNotPaused updateReward(msg.sender) {
         if (amount == 0) {
             revert ZeroAmount();
         }
@@ -236,7 +240,7 @@ contract StakingRewards is Ownable, ReentrancyGuard {
         emit WithDrawn(msg.sender, amount, periodIndex);
     }
 
-    function getReward() external nonReentrant updateReward(msg.sender) {
+    function getReward() external nonReentrant whenNotPaused updateReward(msg.sender) {
         uint256 rewardToClaim = rewards[msg.sender];
         if (rewardToClaim > 0) {
             delete rewards[msg.sender];
@@ -290,8 +294,17 @@ contract StakingRewards is Ownable, ReentrancyGuard {
     // ============================================
     // Admin Functions
     // ============================================
+    function pause() external onlyOwner {
+        _pause();
+    }
+
+    function unpause() external onlyOwner {
+        _unpause();
+    }
+
     function setMinStakeAmount(uint256 _min) external onlyOwner {
         minStakeAmount = _min;
+        emit SetMinStakeAmount(_min);
     }
 
     function setRewardsDuration(uint256 _rewardsDuration) external onlyOwner {
@@ -304,6 +317,7 @@ contract StakingRewards is Ownable, ReentrancyGuard {
         }
 
         rewardsDuration = _rewardsDuration;
+        emit SetRewardsDuration(_rewardsDuration);
     }
 
     function notifyRewardAmount(uint256 amount) external onlyOwner updateReward(address(0)) {
@@ -329,5 +343,7 @@ contract StakingRewards is Ownable, ReentrancyGuard {
         undistributedRewards = 0;
         lastUpdateTime = block.timestamp;
         periodFinish = block.timestamp + rewardsDuration;
+
+        emit NotifyRewardAmount(amount);
     }
 }
