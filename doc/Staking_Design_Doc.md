@@ -25,7 +25,7 @@ In scope:
 ### High-Level Model
 
 The system tracks two layers of state:
-- Global reward index state (`rewardPerTokenStored`, `lastUpdateTime`, `rewardRate`, `periodFinish`, `undistributedRewards`)
+- Global reward index state (`rewardPerTokenStored`, `lastUpdateTime`, `rewardRate`, `periodFinish`, `undistributedRewards`, `minStakeAmount`)
 - User state (`userTotalWeight`, `userRewardPerTokenPaid`, `rewards`, and per-tier `userLocks`, `weightRemainder`)
 
 Each stake updates user and global weight. Reward accrual uses an index-delta model:
@@ -120,6 +120,7 @@ Input: `amount`, `periodIndex`
 
 Checks:
 - `amount > 0`
+- if `minStakeAmount != 0`, require `amount >= minStakeAmount`
 - valid tier index
 
 Effects:
@@ -161,6 +162,10 @@ Interaction:
 - only after current period is finished (`block.timestamp > periodFinish`)
 - `_rewardsDuration` must be non-zero, otherwise revert with `InvalidRewardsDuration()`
 
+#### setMinStakeAmount(_min)
+- owner only
+- `_min = 0` disables the minimum-stake constraint
+
 #### notifyRewardAmount(amount)
 - owner only
 - sync global index first
@@ -189,6 +194,7 @@ Custom errors cover:
 - zero address/amount/rate
 - invalid period index
 - invalid reward duration (`InvalidRewardsDuration`)
+- stake below minimum (`StakeBelowMinimum`)
 - lock violation (`Locked(unlockTime)`)
 - insufficient stake balance
 - insufficient reward pool balance
@@ -258,6 +264,7 @@ Operational checks:
 - dynamic weighting after additional stakes
 - lock enforcement and insufficient-balance reverts
 - invalid input paths (zero amount, invalid tier, zero address ctor)
+- min stake amount enforcement and owner-only setter
 - reward claiming atomicity (transfer + state reset)
 - reward-period continuity on re-funding
 - rollover behavior: zero-weight windows do not back-pay, merge only once, and are included in notify formula

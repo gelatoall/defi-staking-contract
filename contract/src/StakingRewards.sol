@@ -59,6 +59,9 @@ contract StakingRewards is Ownable, ReentrancyGuard {
     /// @dev Accumulate unallocated rewards during periods of inactivity.
     uint256 public undistributedRewards;
 
+    /// @dev Minimum Stake Amount
+    uint256 public minStakeAmount;
+
     /// @dev Array of all available staking tiers
     StakingPeriod[] public stakingPeriods;
 
@@ -105,6 +108,7 @@ contract StakingRewards is Ownable, ReentrancyGuard {
     error InvalidPeriodIndex();
     error InvalidRewardsDuration();
     error Locked(uint256 availableAt);
+    error StakeBelowMinimum(uint256 minAmount);
 
     // ============================================
     // Modifiers
@@ -153,6 +157,10 @@ contract StakingRewards is Ownable, ReentrancyGuard {
     function stake(uint256 amount, uint256 periodIndex) external nonReentrant updateReward(msg.sender) {
         if (amount == 0) {
             revert ZeroAmount();
+        }
+
+        if (minStakeAmount != 0 && amount < minStakeAmount) {
+            revert StakeBelowMinimum(minStakeAmount);
         }
 
         if (periodIndex >= stakingPeriods.length) {
@@ -282,6 +290,10 @@ contract StakingRewards is Ownable, ReentrancyGuard {
     // ============================================
     // Admin Functions
     // ============================================
+    function setMinStakeAmount(uint256 _min) external onlyOwner {
+        minStakeAmount = _min;
+    }
+
     function setRewardsDuration(uint256 _rewardsDuration) external onlyOwner {
         if (block.timestamp <= periodFinish) {
             revert RewardPeriodActive();

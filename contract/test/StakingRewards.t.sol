@@ -714,4 +714,36 @@ contract StakingRewardsTest is Test {
         assertEq(unlockTime, 0);
         assertEq(staking.weightRemainder(alice, tier), 0);
     }
+
+    /// @dev 设置 minStakeAmount 门槛后，小于门槛应回退
+    function test_RevertIf_StakeBelowMinimum() public {
+        vm.prank(staking.owner());
+        staking.setMinStakeAmount(100);
+
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(StakingRewards.StakeBelowMinimum.selector, 100));
+        staking.stake(99, 0);
+    }
+    
+    /// @dev 非 owner 不能设置门槛
+    function test_RevertIf_NonOwnerSetMinStake() public {
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
+        staking.setMinStakeAmount(100);
+    }
+
+    function test_MinStake_ToggleOff() public {
+        vm.prank(staking.owner());
+        staking.setMinStakeAmount(100);
+
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(StakingRewards.StakeBelowMinimum.selector, 100));
+        staking.stake(99, 0);
+
+        vm.prank(staking.owner());
+        staking.setMinStakeAmount(0);
+
+        vm.prank(alice);
+        staking.stake(1, 0);
+    }
 }
