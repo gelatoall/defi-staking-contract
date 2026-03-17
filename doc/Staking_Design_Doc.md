@@ -10,14 +10,26 @@ In scope:
 - Single-contract staking with per-tier lock-up and weighted rewards
 - Owner-managed reward program configuration and funding
 - Deterministic accounting for stake/withdraw/claim flows
+- Emergency pause/unpause controls for user flows (stake/withdraw/claim)
+- Configurable minimum stake threshold (may be disabled)
 
-## Goals 
+Out of scope:
+- Frontend/UI, off-chain analytics, and monitoring infrastructure
+- Cross-chain staking or bridge integrations
+- Token listing/governance processes outside the contract
 
+## Goals and non-goals
+### Goals
 - Provide predictable reward distribution with O(1) global accounting updates
 - Support multiple lock tiers with clear multiplier semantics
 - Prevent reward dilution bugs during stake/withdraw by snapshot-based accounting
 - Keep user flows simple: stake, withdraw after unlock, claim reward
 - Enforce owner-only reward program controls
+
+### Non-Goals
+- Upgradeability/proxy-based contract upgrades
+- Dynamic modification of existing tier configurations (duration/multiplier)
+- Governance-driven parameter changes beyond owner controls
 
 
 ## The Actual Design
@@ -54,6 +66,7 @@ Default tiers at construction:
 - Tier 1: 90 days, 1.5x
 - Tier 2: 180 days, 2x
 - Tier 3: 365 days, 3x
+Design note: tier configuration is hard-coded and not mutable. This avoids changing unlock or reward semantics for existing positions. If future adjustments are required, prefer adding new tiers in a new contract deployment (or a carefully designed migration), rather than modifying existing tiers in place.
 
 ### Reward Accounting
 
@@ -130,6 +143,8 @@ Effects:
 - increase `totalWeight` and `userTotalWeight[user]`
 - increase per-tier `amount` and `weight`
 - reset `unlockTime = now + tier.duration`
+  Design intent: positions within the same tier are merged, so any add-on stake resets the tier's unlock time to prevent end-of-period micro-stake arbitrage and keep incentives aligned with lock duration.
+  Alternative (independent positions) would preserve original unlock times, improving UX for partial top-ups but increasing storage/gas costs and operational complexity (tracking multiple positions, more withdrawal paths, and more test surface). Given this is an MVP, the design prioritizes simplicity, lower gas, and predictable incentive alignment. If user demand for independent unlocks is strong, a future version can add per-deposit positions, likely via a new contract deployment and migration path.
 
 Interaction:
 - transfer staking tokens from user to contract
@@ -188,6 +203,7 @@ rewardRate = (remaining + amount) / rewardsDuration
 
 - reject zero rate
 - reject if contract balance cannot cover `rewardRate * rewardsDuration`
+- operational flow: transfer sufficient `rewardToken` into the staking contract before calling `notifyRewardAmount(amount)`; the call reverts if the contract balance is insufficient
 - set `lastUpdateTime = now`, `periodFinish = now + rewardsDuration`
 - clear `undistributedRewards` after it is merged into the new schedule
 
@@ -223,6 +239,16 @@ This contract includes multiple built-in security mechanisms:
 
 - `Ownable`:
   Administrative functions (`setRewardsDuration`, `notifyRewardAmount`) are restricted with `onlyOwner`, preventing unauthorized reward schedule changes.
+  Production recommendation: use a multi-signature wallet as the owner to reduce key risk and improve governance safety.
+  Operational guidance:
+  - Use a timelock for sensitive parameter changes (reward duration, reward injection, min stake, pause/unpause) to give users advance notice.
+  - Owner action scope and intended use:
+    - `setRewardsDuration`: adjust program length between reward cycles; only after the current period ends.
+    - `notifyRewardAmount`: start or extend reward emission after transferring reward tokens into the contract.
+    - `setMinStakeAmount`: set or remove a minimum stake to reduce dust/spam activity.
+    - `pause`: emergency stop for incidents (e.g., critical bug, exploit, or unexpected token behavior).
+    - `unpause`: resume normal operations after incident resolution and verification.
+  - For stronger decentralization, migrate ownership to a governance contract (typically via timelock + DAO) once the product matures.
 
 - `Pausable`:
   `stake`, `withdraw`, and `getReward` are gated by `whenNotPaused`, allowing emergency stop in case of incidents.
