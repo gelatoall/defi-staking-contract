@@ -84,10 +84,10 @@ contract StakingRewards is Ownable, ReentrancyGuard, Pausable {
     /// @dev user address => rewards to be claimed
     mapping(address => uint256) public rewards;
 
-    /// @dev total staked
-    // uint256 public _totalSupply;
-    /// @dev user address => staked amount
-    // mapping(address => uint256) public _balances;
+    /// @dev Max Stake Amount per user
+    uint256 public maxStakePerUser;
+    /// @dev user address => total staked amount per user
+    mapping(address => uint256) public userTotalStaked;
 
     // ============================================
     // Events
@@ -96,6 +96,7 @@ contract StakingRewards is Ownable, ReentrancyGuard, Pausable {
     event WithDrawn(address indexed user, uint256 amount, uint256 periodIndex);
     event RewardPaid(address indexed user, uint256 amount);
     event SetMinStakeAmount(uint256 amount);
+    event SetMaxStakePerUser(uint256 amount);
     event SetRewardsDuration(uint256 duration);
     event NotifyRewardAmount(uint256 amount);
 
@@ -106,6 +107,7 @@ contract StakingRewards is Ownable, ReentrancyGuard, Pausable {
     error ZeroAddress();
     error ZeroAmount();
     error ZeroRewardRate();
+    error SameTokenNotAllowed();
     error InsufficientBalance();
     error InsufficientRewardBalance();
     error RewardPeriodActive();
@@ -113,6 +115,7 @@ contract StakingRewards is Ownable, ReentrancyGuard, Pausable {
     error InvalidRewardsDuration();
     error Locked(uint256 availableAt);
     error StakeBelowMinimum(uint256 minAmount);
+    error StakeAboveUserCap(uint256 maxAmount);
 
     // ============================================
     // Modifiers
@@ -136,6 +139,10 @@ contract StakingRewards is Ownable, ReentrancyGuard, Pausable {
     constructor(address _stakingToken, address _rewardToken) Ownable(msg.sender) {
         if (_stakingToken == address(0) || _rewardToken == address(0)) {
             revert ZeroAddress();
+        }
+
+        if (_stakingToken == _rewardToken) {
+            revert SameTokenNotAllowed();
         }
 
         stakingToken = IERC20(_stakingToken);
@@ -171,6 +178,10 @@ contract StakingRewards is Ownable, ReentrancyGuard, Pausable {
             revert InvalidPeriodIndex();
         }
 
+        if (maxStakePerUser != 0 && userTotalStaked[msg.sender] + amount > maxStakePerUser) {
+            revert StakeAboveUserCap(maxStakePerUser);
+        }
+
         // 1. Get stakingPeriod (one-time SLOAD)
         StakingPeriod memory stakingPeriod = stakingPeriods[periodIndex];
 
@@ -182,6 +193,8 @@ contract StakingRewards is Ownable, ReentrancyGuard, Pausable {
         // 3. Update global and user-specific aggregate indices
         totalWeight += weightAdded;
         userTotalWeight[msg.sender] += weightAdded;
+
+        userTotalStaked[msg.sender] += amount;
 
         // 4. Update specific positions
         UserLocks storage lockedBalances = userLocks[msg.sender][periodIndex];
@@ -223,6 +236,8 @@ contract StakingRewards is Ownable, ReentrancyGuard, Pausable {
         // 3. Update global and user-specific aggregate indices
         totalWeight -= weightRemoved;
         userTotalWeight[msg.sender] -= weightRemoved;
+
+        userTotalStaked[msg.sender] -= amount;
 
         // 4. Update specific positions
         // Remove amount/weight from positions at the same amount level
@@ -305,6 +320,11 @@ contract StakingRewards is Ownable, ReentrancyGuard, Pausable {
     function setMinStakeAmount(uint256 _min) external onlyOwner {
         minStakeAmount = _min;
         emit SetMinStakeAmount(_min);
+    }
+
+    function setMaxStakePerUser(uint256 _max) external onlyOwner {
+        maxStakePerUser = _max;
+        emit SetMaxStakePerUser(_max);
     }
 
     function setRewardsDuration(uint256 _rewardsDuration) external onlyOwner {

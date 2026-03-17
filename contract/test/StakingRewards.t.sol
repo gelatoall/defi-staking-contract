@@ -628,7 +628,7 @@ contract StakingRewardsTest is Test {
         assertEq(staking.undistributedRewards(), 0, "Rollover pool should be cleared after merge");
     }
 
-    /// @dev 余数累计：同用户同档位小额多次质押能凑整
+    /// @dev 用例26 余数累计：同用户同档位小额多次质押能凑整
     function test_RemainderAccumulation_SameUserSameTier() public {
         uint256 tier = 1;
 
@@ -650,7 +650,7 @@ contract StakingRewardsTest is Test {
         assertEq(staking.weightRemainder(alice, tier), 0, "remainder should be consumed");
     }
 
-    /// @dev 余数隔离：不同档位余数互不影响
+    /// @dev 用例27 余数隔离：不同档位余数互不影响
     function test_RemainderIsolation_DifferentTiers() public {
         vm.prank(alice);
         staking.stake(1, 1); // remainder 50
@@ -661,7 +661,7 @@ contract StakingRewardsTest is Test {
         assertEq(staking.weightRemainder(alice, 0), 0);
     }
 
-    /// @dev 余数隔离：不同用户余数互不影响
+    /// @dev 用例28 余数隔离：不同用户余数互不影响
     function test_RemainderIsolation_DifferentUsers() public {
         vm.prank(alice);
         staking.stake(1, 1); // remainder 50
@@ -672,7 +672,7 @@ contract StakingRewardsTest is Test {
         assertEq(staking.weightRemainder(bob, 1), 50);
     }
 
-    /// @dev 部分提现：按仓位比例扣减权重
+    /// @dev 用例29 部分提现：按仓位比例扣减权重
     function test_Withdraw_ProportionalWeightRemoval_WithRemainder() public {
         uint256 tier = 1; // 1.5x
         vm.prank(alice);
@@ -697,6 +697,7 @@ contract StakingRewardsTest is Test {
         assertEq(staking.userTotalWeight(alice), 3);
     }
 
+    /// @dev 用例30 全额提现：清理余数
     function test_Withdraw_FullExit_ClearsRemainder() public {
         uint256 tier = 1;
         vm.prank(alice);
@@ -715,7 +716,7 @@ contract StakingRewardsTest is Test {
         assertEq(staking.weightRemainder(alice, tier), 0);
     }
 
-    /// @dev 设置 minStakeAmount 门槛后，小于门槛应回退
+    /// @dev 用例31 设置 minStakeAmount 门槛后，小于门槛应回退
     function test_RevertIf_StakeBelowMinimum() public {
         vm.prank(staking.owner());
         staking.setMinStakeAmount(100);
@@ -725,13 +726,14 @@ contract StakingRewardsTest is Test {
         staking.stake(99, 0);
     }
     
-    /// @dev 非 owner 不能设置门槛
+    /// @dev 用例32 非 owner 不能设置门槛
     function test_RevertIf_NonOwnerSetMinStake() public {
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
         staking.setMinStakeAmount(100);
     }
 
+    /// @dev 用例33 关闭门槛后可再次小额质押
     function test_MinStake_ToggleOff() public {
         vm.prank(staking.owner());
         staking.setMinStakeAmount(100);
@@ -747,6 +749,7 @@ contract StakingRewardsTest is Test {
         staking.stake(1, 0);
     }
 
+    /// @dev 用例34 pause 阻止 stake
     function test_PauseBlocksStake() public {
         vm.prank(staking.owner());
         staking.pause();
@@ -756,6 +759,7 @@ contract StakingRewardsTest is Test {
         staking.stake(100e18, 0);
     }
 
+    /// @dev 用例35 pause 阻止 withdraw
     function test_PauseBlocksWithdraw() public {
         vm.prank(alice);
         staking.stake(100e18, 0);
@@ -768,6 +772,7 @@ contract StakingRewardsTest is Test {
         staking.withdraw(1e18, 0);
     }
 
+    /// @dev 用例36 pause 阻止 getReward
     function test_PauseBlocksGetReward() public {
         vm.prank(alice);
         staking.stake(100e18, 0);
@@ -780,6 +785,7 @@ contract StakingRewardsTest is Test {
         staking.getReward();
     }
 
+    /// @dev 用例37 unpause 恢复 stake
     function test_UnpauseRestores() public {
         vm.prank(staking.owner());
         staking.pause();
@@ -789,4 +795,64 @@ contract StakingRewardsTest is Test {
         vm.prank(alice);
         staking.stake(100e18, 0);
     }
+
+    /// @dev 用例38 超过上限应回退
+    function test_RevertIf_StakeAboveUserCap() public {
+        vm.prank(staking.owner());
+        staking.setMaxStakePerUser(100);
+
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(StakingRewards.StakeAboveUserCap.selector, 100));
+        staking.stake(101, 0);
+    }
+
+    /// @dev 用例39 等于上限可质押
+    function test_StakeAtUserCap_Succeeds() public {
+        vm.prank(staking.owner());
+        staking.setMaxStakePerUser(100);
+
+        vm.prank(alice);
+        staking.stake(100, 0);
+        assertEq(staking.userTotalStaked(alice), 100);
+    }
+
+    /// @dev 用例40 提现后可继续质押（上限重新腾出）
+    function test_UserCap_AllowsRestakeAfterWithdraw() public {
+        vm.prank(staking.owner());
+        staking.setMaxStakePerUser(100);
+
+        vm.prank(alice);
+        staking.stake(100, 0);
+
+        (, , uint256 unlock) = staking.userLocks(alice, 0);
+        vm.warp(unlock + 1);
+
+        vm.prank(alice);
+        staking.withdraw(60, 0);
+
+        vm.prank(alice);
+        staking.stake(60, 0);
+
+        assertEq(staking.userTotalStaked(alice), 100);
+    }
+
+    /// @dev 用例41 非 owner 不能设置上限
+    function test_RevertIf_NonOwnerSetsMaxStakePerUser() public {
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
+        staking.setMaxStakePerUser(100);
+    }
+
+    /// @dev 用例42 关闭上限（0）后可任意质押
+    function test_MaxStake_ToggleOff() public {
+        vm.prank(staking.owner());
+        staking.setMaxStakePerUser(100);
+
+        vm.prank(staking.owner());
+        staking.setMaxStakePerUser(0);
+
+        vm.prank(alice);
+        staking.stake(1000, 0);
+    }
+
 }

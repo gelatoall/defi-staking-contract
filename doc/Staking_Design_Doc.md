@@ -3,6 +3,7 @@
 ## Context and Scope
 
 `StakingRewards` is a lock-up staking contract where users deposit a staking token (`stakingToken`) and earn rewards in another token (`rewardToken`).
+Design constraint: `stakingToken` and `rewardToken` must be different to avoid mixing principal and rewards in the same balance.
 
 The contract supports fixed staking tiers with different lock durations and reward multipliers. Rewards are streamed linearly over time and distributed proportionally by staking weight (not raw principal).
 
@@ -37,7 +38,7 @@ Out of scope:
 ### High-Level Model
 
 The system tracks two layers of state:
-- Global reward index state (`rewardPerTokenStored`, `lastUpdateTime`, `rewardRate`, `periodFinish`, `undistributedRewards`, `minStakeAmount`)
+- Global reward index state (`rewardPerTokenStored`, `lastUpdateTime`, `rewardRate`, `periodFinish`, `undistributedRewards`, `minStakeAmount`, `maxStakePerUser`)
 - User state (`userTotalWeight`, `userRewardPerTokenPaid`, `rewards`, and per-tier `userLocks`, `weightRemainder`)
 
 Each stake updates user and global weight. Reward accrual uses an index-delta model:
@@ -134,6 +135,7 @@ Input: `amount`, `periodIndex`
 Checks:
 - `amount > 0`
 - if `minStakeAmount != 0`, require `amount >= minStakeAmount`
+- if `maxStakePerUser != 0`, require `userTotalStaked[user] + amount <= maxStakePerUser`
 - `whenNotPaused` (staking is disabled during emergency pause)
 - valid tier index
 
@@ -141,6 +143,7 @@ Effects:
 - compute `raw = amount * multiplier + weightRemainder[user][periodIndex]`
 - compute `weightAdded = raw / 100` and update `weightRemainder[user][periodIndex] = raw % 100`
 - increase `totalWeight` and `userTotalWeight[user]`
+- increase `userTotalStaked[user]`
 - increase per-tier `amount` and `weight`
 - reset `unlockTime = now + tier.duration`
   Design intent: positions within the same tier are merged, so any add-on stake resets the tier's unlock time to prevent end-of-period micro-stake arbitrage and keep incentives aligned with lock duration.
@@ -162,6 +165,7 @@ Checks:
 Effects:
 - compute `weightRemoved = locked.weight * amount / locked.amount` (proportional removal)
 - decrease global/user weights
+- decrease `userTotalStaked[user]`
 - full withdraw: delete tier slot
 - partial withdraw: decrement tier `amount` and `weight`
 
@@ -183,6 +187,11 @@ Interaction:
 #### setMinStakeAmount(_min)
 - owner only
 - `_min = 0` disables the minimum-stake constraint
+
+#### setMaxStakePerUser(_max)
+- owner only
+- `_max = 0` disables the per-user cap
+  Rationale: optional anti-concentration control to reduce single-address dominance of reward weight.
 
 #### pause / unpause
 - owner only
@@ -214,6 +223,7 @@ Events:
 - `WithDrawn(user, amount, periodIndex)`
 - `RewardPaid(user, amount)`
 - `SetMinStakeAmount(amount)`
+- `SetMaxStakePerUser(amount)`
 - `SetRewardsDuration(duration)`
 - `NotifyRewardAmount(amount)`
 
@@ -222,6 +232,8 @@ Custom errors cover:
 - invalid period index
 - invalid reward duration (`InvalidRewardsDuration`)
 - stake below minimum (`StakeBelowMinimum`)
+- same staking/reward token not allowed (`SameTokenNotAllowed`)
+- stake above user cap (`StakeAboveUserCap`)
 - lock violation (`Locked(unlockTime)`)
 - insufficient stake balance
 - insufficient reward pool balance
@@ -264,7 +276,7 @@ This contract includes multiple built-in security mechanisms:
 Use the following initialization order after deployment:
 
 1. Verify constructor inputs:
-   Confirm `stakingToken` and `rewardToken` are non-zero addresses and point to the intended ERC20 contracts.
+   Confirm `stakingToken` and `rewardToken` are non-zero addresses, different from each other, and point to the intended ERC20 contracts.
 
 2. (Optional) Override reward duration:
    Constructor sets a default `rewardsDuration = 7 days`. If a different duration is needed, owner can call `setRewardsDuration(...)` before first funding.
@@ -305,6 +317,7 @@ Operational checks:
 - lock enforcement and insufficient-balance reverts
 - invalid input paths (zero amount, invalid tier, zero address ctor)
 - min stake amount enforcement and owner-only setter
+- max stake per user enforcement and owner-only setter
 - pause/unpause behavior for stake, withdraw, and claim
 - reward claiming atomicity (transfer + state reset)
 - reward-period continuity on re-funding
