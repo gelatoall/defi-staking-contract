@@ -228,18 +228,16 @@ contract StakingRewards is Ownable, ReentrancyGuard, Pausable {
             revert InsufficientBalance();
         }
 
-        // 1. Get stakingPeriod (one-time SLOAD)
-        StakingPeriod memory stakingPeriod = stakingPeriods[periodIndex];
-        // 2. Calculate the weight that needs to be removed in this withdrawal.
+        // 1. Calculate the weight that needs to be removed in this withdrawal.
         uint256 weightRemoved = amount * lockedBalances.weight / lockedBalances.amount;
 
-        // 3. Update global and user-specific aggregate indices
+        // 2. Update global and user-specific aggregate indices
         totalWeight -= weightRemoved;
         userTotalWeight[msg.sender] -= weightRemoved;
 
         userTotalStaked[msg.sender] -= amount;
 
-        // 4. Update specific positions
+        // 3. Update specific positions
         // Remove amount/weight from positions at the same amount level
         if (lockedBalances.amount == amount) {
             delete userLocks[msg.sender][periodIndex];
@@ -249,7 +247,7 @@ contract StakingRewards is Ownable, ReentrancyGuard, Pausable {
             lockedBalances.weight -= weightRemoved;
         }
 
-        // 5. Transfer
+        // 4. Transfer
         stakingToken.safeTransfer(msg.sender, amount);
 
         emit WithDrawn(msg.sender, amount, periodIndex);

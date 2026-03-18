@@ -207,12 +207,13 @@ Interaction:
 
 ```text
 remaining = (periodFinish - now) * rewardRate
-rewardRate = (remaining + amount) / rewardsDuration
+rewardRate = (remaining + amount + undistributedRewards) / rewardsDuration
 ```
 
 - reject zero rate
 - reject if contract balance cannot cover `rewardRate * rewardsDuration`
 - operational flow: transfer sufficient `rewardToken` into the staking contract before calling `notifyRewardAmount(amount)`; the call reverts if the contract balance is insufficient
+- note: calling `notifyRewardAmount(0)` when there is no remaining or undistributed reward will revert with `ZeroRewardRate`, so it cannot be used as a pure “no-op” settlement trigger.
 - set `lastUpdateTime = now`, `periodFinish = now + rewardsDuration`
 - clear `undistributedRewards` after it is merged into the new schedule
 
