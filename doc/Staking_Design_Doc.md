@@ -167,7 +167,26 @@ Effects:
 - decrease global/user weights
 - decrease `userTotalStaked[user]`
 - full withdraw: delete tier slot
-- partial withdraw: decrement tier `amount` and `weight`
+- partial withdraw: decrement tier `amount` and `weight`, and scale down `weightRemainder` proportionally to the remaining amount:
+  `newRemainder = oldRemainder * newAmount / oldAmount`
+
+Interaction:
+- transfer staking tokens back to user
+
+#### Emergency Withdraw
+Input: `amount`, `periodIndex`
+
+Checks:
+- `amount > 0`
+- valid tier index
+- `whenPaused` (only available during emergency pause)
+
+Effects:
+- bypasses unlock time; returns principal only and clears pending rewards
+- compute `weightRemoved = locked.weight * amount / locked.amount` (proportional removal)
+- decrease global/user weights
+- decrease `userTotalStaked[user]`
+- update `userLocks` and scale down `weightRemainder` for partial exits
 
 Interaction:
 - transfer staking tokens back to user
@@ -221,7 +240,8 @@ rewardRate = (remaining + amount + undistributedRewards) / rewardsDuration
 
 Events:
 - `Staked(user, amount, periodIndex)`
-- `WithDrawn(user, amount, periodIndex)`
+- `Withdrawn(user, amount, periodIndex)`
+- `EmergencyWithdrawn(user, amount, periodIndex)`
 - `RewardPaid(user, amount)`
 - `SetMinStakeAmount(amount)`
 - `SetMaxStakePerUser(amount)`

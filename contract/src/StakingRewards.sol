@@ -93,7 +93,8 @@ contract StakingRewards is Ownable, ReentrancyGuard, Pausable {
     // Events
     // ============================================
     event Staked(address indexed user, uint256 amount, uint256 periodIndex);
-    event WithDrawn(address indexed user, uint256 amount, uint256 periodIndex);
+    event Withdrawn(address indexed user, uint256 amount, uint256 periodIndex);
+    event EmergencyWithdrawn(address indexed user, uint256 amount, uint256 periodIndex);
     event RewardPaid(address indexed user, uint256 amount);
     event SetMinStakeAmount(uint256 amount);
     event SetMaxStakePerUser(uint256 amount);
@@ -165,6 +166,7 @@ contract StakingRewards is Ownable, ReentrancyGuard, Pausable {
     // Staking Integration
     // ============================================
 
+    /// @dev Stake into a tier; merges positions within the same tier and resets unlock time.
     function stake(uint256 amount, uint256 periodIndex) external nonReentrant whenNotPaused updateReward(msg.sender) {
         if (amount == 0) {
             revert ZeroAmount();
@@ -210,6 +212,7 @@ contract StakingRewards is Ownable, ReentrancyGuard, Pausable {
         emit Staked(msg.sender, amount, periodIndex);
     }
 
+    /// @dev Withdraw principal after unlock; proportional weight reduction for partial exits.
     function withdraw(uint256 amount, uint256 periodIndex) external nonReentrant whenNotPaused updateReward(msg.sender) {
         if (amount == 0) {
             revert ZeroAmount();
@@ -239,20 +242,26 @@ contract StakingRewards is Ownable, ReentrancyGuard, Pausable {
 
         // 3. Update specific positions
         // Remove amount/weight from positions at the same amount level
+        uint256 oldAmount = lockedBalances.amount;
         if (lockedBalances.amount == amount) {
             delete userLocks[msg.sender][periodIndex];
             delete weightRemainder[msg.sender][periodIndex];
         } else {
             lockedBalances.amount -= amount;
             lockedBalances.weight -= weightRemoved;
+
+            uint256 oldRemainder = weightRemainder[msg.sender][periodIndex];
+            uint256 newRemainder = oldRemainder * lockedBalances.amount / oldAmount;
+            weightRemainder[msg.sender][periodIndex] = newRemainder;
         }
 
         // 4. Transfer
         stakingToken.safeTransfer(msg.sender, amount);
 
-        emit WithDrawn(msg.sender, amount, periodIndex);
+        emit Withdrawn(msg.sender, amount, periodIndex);
     }
 
+    /// @dev Claim accrued rewards.
     function getReward() external nonReentrant whenNotPaused updateReward(msg.sender) {
         uint256 rewardToClaim = rewards[msg.sender];
         if (rewardToClaim > 0) {
@@ -262,9 +271,52 @@ contract StakingRewards is Ownable, ReentrancyGuard, Pausable {
         }
     }
 
+    /// @dev Emergency escape hatch during pause: returns principal only, skips rewards, and ignores lock time.
+    function emergencyWithdraw(uint256 amount, uint256 periodIndex) external nonReentrant whenPaused {
+        if (amount == 0) {
+            revert ZeroAmount();
+        }
+
+        if (periodIndex >= stakingPeriods.length) {
+            revert InvalidPeriodIndex();
+        }
+
+        UserLocks storage lockedBalances = userLocks[msg.sender][periodIndex];
+        if (lockedBalances.amount < amount) {
+            revert InsufficientBalance();
+        }
+
+        uint256 weightRemoved = amount * lockedBalances.weight / lockedBalances.amount;
+
+        totalWeight -= weightRemoved;
+        userTotalWeight[msg.sender] -= weightRemoved;
+
+        userTotalStaked[msg.sender] -= amount;
+
+        uint256 oldAmount = lockedBalances.amount;
+        if (lockedBalances.amount == amount) {
+            delete userLocks[msg.sender][periodIndex];
+            delete weightRemainder[msg.sender][periodIndex];
+        } else {
+            lockedBalances.amount -= amount;
+            lockedBalances.weight -= weightRemoved;
+
+            uint256 oldRemainder = weightRemainder[msg.sender][periodIndex];
+            uint256 newRemainder = oldRemainder * lockedBalances.amount / oldAmount;
+            weightRemainder[msg.sender][periodIndex] = newRemainder;
+        }
+
+        delete rewards[msg.sender];
+
+        stakingToken.safeTransfer(msg.sender, amount);
+
+        emit EmergencyWithdrawn(msg.sender, amount, periodIndex);
+    }
+
     // ============================================
     // View Functions
     // ============================================
+    /// @dev Current global reward index per unit of weight.
     function rewardPerToken() public view returns (uint256) {
         if (totalWeight == 0) {
             return rewardPerTokenStored;
@@ -275,6 +327,7 @@ contract StakingRewards is Ownable, ReentrancyGuard, Pausable {
                 + (rewardRate * (lastTimeRewardApplicable() - lastUpdateTime) * PRECISION / totalWeight);
     }
 
+    /// @dev Pending rewards for an account, including stored rewards.
     function earned(address account) public view returns (uint256) {
         return
             userTotalWeight[account] * (rewardPerToken() - userRewardPerTokenPaid[account]) / PRECISION
@@ -282,6 +335,7 @@ contract StakingRewards is Ownable, ReentrancyGuard, Pausable {
     }
 
     // Ensure once the reward period ends, the calculation must stop at the endpoint.
+    /// @dev Clamp reward accrual to the reward period.
     function lastTimeRewardApplicable() public view returns (uint256) {
         return block.timestamp < periodFinish ? block.timestamp : periodFinish;
     }
@@ -307,24 +361,29 @@ contract StakingRewards is Ownable, ReentrancyGuard, Pausable {
     // ============================================
     // Admin Functions
     // ============================================
+    /// @dev Pause user flows (stake/withdraw/claim).
     function pause() external onlyOwner {
         _pause();
     }
 
+    /// @dev Resume user flows.
     function unpause() external onlyOwner {
         _unpause();
     }
 
+    /// @dev Set minimum stake amount; 0 disables the check.
     function setMinStakeAmount(uint256 _min) external onlyOwner {
         minStakeAmount = _min;
         emit SetMinStakeAmount(_min);
     }
 
+    /// @dev Set per-user stake cap; 0 disables the cap.
     function setMaxStakePerUser(uint256 _max) external onlyOwner {
         maxStakePerUser = _max;
         emit SetMaxStakePerUser(_max);
     }
 
+    /// @dev Configure rewards duration (only after current period ends).
     function setRewardsDuration(uint256 _rewardsDuration) external onlyOwner {
         if (block.timestamp <= periodFinish) {
             revert RewardPeriodActive();
@@ -338,6 +397,7 @@ contract StakingRewards is Ownable, ReentrancyGuard, Pausable {
         emit SetRewardsDuration(_rewardsDuration);
     }
 
+    /// @dev Start or update reward emission for the next period.
     function notifyRewardAmount(uint256 amount) external onlyOwner updateReward(address(0)) {
         if (rewardsDuration == 0) {
             revert InvalidRewardsDuration();

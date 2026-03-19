@@ -855,4 +855,110 @@ contract StakingRewardsTest is Test {
         staking.stake(1000, 0);
     }
 
+    /// @dev 用例43 余数在部分提现后应按比例缩减，避免权重虚增
+    function test_Remainder_ScalesDown_OnPartialWithdraw() public {
+        uint256 tier = 1;
+        // stake(3): raw=450 -> weight=4, remainder=50
+        vm.prank(alice);
+        staking.stake(3, tier);
+
+        (uint256 amount1, uint256 weight1, uint256 unlock) = staking.userLocks(alice, tier);
+        assertEq(amount1, 3);
+        assertEq(weight1, 4);
+        assertEq(staking.weightRemainder(alice, tier), 50);
+
+        // 解锁后部分提现 1
+        vm.warp(unlock + 1);
+        vm.prank(alice);
+        staking.withdraw(1, tier);
+
+        (uint256 amount2, uint256 weight2, ) = staking.userLocks(alice, tier);
+        assertEq(amount2, 2);
+        assertEq(weight2, 3);
+        // 余数应按比例缩为 50 * 2 / 3 = 33 (floor)
+        assertEq(staking.weightRemainder(alice, tier), 33);
+        
+        // 再 stake(1): raw=150+33=183 -> weightAdded=1 -> total weight=4
+        vm.prank(alice);
+        staking.stake(1, tier);
+
+        (uint256 amount3, uint256 weight3, ) = staking.userLocks(alice, tier);
+        assertEq(amount3, 3);
+        assertEq(weight3, 4);
+        assertEq(staking.weightRemainder(alice, tier), 83);
+    }
+
+    /// @dev 用例44 emergencyWithdraw：暂停期可无视锁仓提回本金，且不发奖励
+    function test_EmergencyWithdraw_BypassesLockAndSkipsRewards() public {
+        // 先质押
+        vm.prank(alice);
+        staking.stake(100e18, 0);
+
+        // 产生一些奖励
+        vm.warp(block.timestamp + 10);
+
+        // 暂停
+        vm.prank(staking.owner());
+        staking.pause();
+
+        // 紧急退出：不需要等解锁
+        uint256 aliceBefore = stakingToken.balanceOf(alice);
+        vm.prank(alice);
+        staking.emergencyWithdraw(40e18, 0);
+
+        uint256 aliceAfter = stakingToken.balanceOf(alice);
+        assertEq(aliceAfter - aliceBefore, 40e18, "principal should be returned");
+
+        // 奖励应被清零
+        assertEq(staking.rewards(alice), 0, "rewards should be cleared on emergency withdraw");
+    }
+
+    /// @dev 用例45 emergencyWithdraw：部分退出后权重与余数同步更新
+    function test_EmergencyWithdraw_PartialUpdatesState() public {
+        uint256 tier = 1; // 1.5x
+        vm.prank(alice);
+        staking.stake(3, tier); // weight=4, remainder=50
+
+        vm.prank(staking.owner());
+        staking.pause();
+
+        vm.prank(alice);
+        staking.emergencyWithdraw(1, tier);
+
+        (uint256 amount, uint256 weight, ) = staking.userLocks(alice, tier);
+        assertEq(amount, 2);
+        assertEq(weight, 3);
+        // 余数按比例缩减：50 * 2 / 3 = 33
+        assertEq(staking.weightRemainder(alice, tier), 33);
+    }
+
+    /// @dev 用例46 emergencyWithdraw：仅在暂停期可用
+    function test_EmergencyWithdraw_RevertsWhenNotPaused() public {
+        vm.prank(alice);
+        staking.stake(100e18, 0);
+
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSignature("ExpectedPause()"));
+        staking.emergencyWithdraw(10e18, 0);
+    }
+
+    /// @dev 用例47 emergencyWithdraw：全额退出清理仓位和余数
+    function test_EmergencyWithdraw_FullExitClearsState() public {
+        uint256 tier = 1;
+        vm.prank(alice);
+        staking.stake(1, tier);
+
+        vm.prank(staking.owner());
+        staking.pause();
+
+        vm.prank(alice);
+        staking.emergencyWithdraw(1, tier);
+
+        (uint256 amount, uint256 weight, uint256 unlockTime) = staking.userLocks(alice, tier);
+        assertEq(amount, 0);
+        assertEq(weight, 0);
+        assertEq(unlockTime, 0);
+        assertEq(staking.weightRemainder(alice, tier), 0);
+    }
+
 }
