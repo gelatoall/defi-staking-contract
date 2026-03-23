@@ -273,6 +273,8 @@ contract StakingRewards is Ownable, ReentrancyGuard, Pausable {
 
     /// @dev Emergency escape hatch during pause: returns principal only, skips rewards, and ignores lock time.
     function emergencyWithdraw(uint256 amount, uint256 periodIndex) external nonReentrant whenPaused {
+        _updateGlobalRewards();
+        
         if (amount == 0) {
             revert ZeroAmount();
         }

@@ -182,6 +182,7 @@ Checks:
 - `whenPaused` (only available during emergency pause)
 
 Effects:
+- calls `_updateGlobalRewards()` before mutating weights to preserve global accounting for other users
 - bypasses unlock time; returns principal only and clears pending rewards
 - compute `weightRemoved = locked.weight * amount / locked.amount` (proportional removal)
 - decrease global/user weights
@@ -340,6 +341,7 @@ Operational checks:
 - min stake amount enforcement and owner-only setter
 - max stake per user enforcement and owner-only setter
 - pause/unpause behavior for stake, withdraw, and claim
+- emergency withdraw behavior (pause-only exit, principal-only, preserves other users' rewards)
 - reward claiming atomicity (transfer + state reset)
 - reward-period continuity on re-funding
 - rollover behavior: zero-weight windows do not back-pay, merge only once, and are included in notify formula

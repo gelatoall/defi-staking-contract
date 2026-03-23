@@ -961,4 +961,32 @@ contract StakingRewardsTest is Test {
         assertEq(staking.weightRemainder(alice, tier), 0);
     }
 
+    /// @dev 用例48 emergencyWithdraw: global reward accounting remains correct for other users
+    function test_EmergencyWithdraw_PreservesOthersRewards() public {
+        // Alice and Bob stake equal amounts in tier 0 (1x)
+        uint256 tier = 0;
+        uint256 amount = 100e18;
+        vm.prank(alice);
+        staking.stake(amount, tier);
+        vm.prank(bob);
+        staking.stake(amount, tier);
+
+        // Accrue rewards for 10 seconds
+        vm.warp(block.timestamp + 10);
+        uint256 expected1 = 10 * staking.rewardRate() / 2;
+        assertEq(staking.earned(bob), expected1);
+
+        // Pause and let Alice emergency withdraw
+        vm.prank(staking.owner());
+        staking.pause();
+        vm.prank(alice);
+        staking.emergencyWithdraw(amount, tier);
+
+        // Accrue rewards for another 10 seconds (Bob only)
+        vm.warp(block.timestamp + 10);
+
+        // Expected: 10s at 50% + 10s at 100% = 1500e18
+        uint256 expected2 = expected1 + 10 * staking.rewardRate();
+        assertEq(staking.earned(bob), expected2, "Bob should not be diluted by Alice emergency exit");
+    }
 }
