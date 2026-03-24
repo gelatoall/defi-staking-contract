@@ -137,6 +137,9 @@ contract StakingRewards is Ownable, ReentrancyGuard, Pausable {
     // ============================================
     // Constructor
     // ============================================
+    /// @dev Initialize staking and reward tokens and set default tiers.
+    /// @param _stakingToken ERC20 token used for staking.
+    /// @param _rewardToken ERC20 token used for rewards.
     constructor(address _stakingToken, address _rewardToken) Ownable(msg.sender) {
         if (_stakingToken == address(0) || _rewardToken == address(0)) {
             revert ZeroAddress();
@@ -167,6 +170,8 @@ contract StakingRewards is Ownable, ReentrancyGuard, Pausable {
     // ============================================
 
     /// @dev Stake into a tier; merges positions within the same tier and resets unlock time.
+    /// @param amount Amount of staking tokens to deposit.
+    /// @param periodIndex Tier index to stake into.
     function stake(uint256 amount, uint256 periodIndex) external nonReentrant whenNotPaused updateReward(msg.sender) {
         if (amount == 0) {
             revert ZeroAmount();
@@ -213,6 +218,8 @@ contract StakingRewards is Ownable, ReentrancyGuard, Pausable {
     }
 
     /// @dev Withdraw principal after unlock; proportional weight reduction for partial exits.
+    /// @param amount Amount of principal to withdraw.
+    /// @param periodIndex Tier index to withdraw from.
     function withdraw(uint256 amount, uint256 periodIndex) external nonReentrant whenNotPaused updateReward(msg.sender) {
         if (amount == 0) {
             revert ZeroAmount();
@@ -272,6 +279,8 @@ contract StakingRewards is Ownable, ReentrancyGuard, Pausable {
     }
 
     /// @dev Emergency escape hatch during pause: returns principal only, skips rewards, and ignores lock time.
+    /// @param amount Amount of principal to withdraw.
+    /// @param periodIndex Tier index to withdraw from.
     function emergencyWithdraw(uint256 amount, uint256 periodIndex) external nonReentrant whenPaused {
         _updateGlobalRewards();
         
@@ -319,6 +328,7 @@ contract StakingRewards is Ownable, ReentrancyGuard, Pausable {
     // View Functions
     // ============================================
     /// @dev Current global reward index per unit of weight.
+    /// @return rewardPerTokenStored Current accumulated reward per unit weight.
     function rewardPerToken() public view returns (uint256) {
         if (totalWeight == 0) {
             return rewardPerTokenStored;
@@ -330,6 +340,8 @@ contract StakingRewards is Ownable, ReentrancyGuard, Pausable {
     }
 
     /// @dev Pending rewards for an account, including stored rewards.
+    /// @param account User address.
+    /// @return totalEarned Total rewards accrued for the account.
     function earned(address account) public view returns (uint256) {
         return
             userTotalWeight[account] * (rewardPerToken() - userRewardPerTokenPaid[account]) / PRECISION
@@ -338,6 +350,7 @@ contract StakingRewards is Ownable, ReentrancyGuard, Pausable {
 
     // Ensure once the reward period ends, the calculation must stop at the endpoint.
     /// @dev Clamp reward accrual to the reward period.
+    /// @return timestamp The last timestamp at which rewards accrue.
     function lastTimeRewardApplicable() public view returns (uint256) {
         return block.timestamp < periodFinish ? block.timestamp : periodFinish;
     }
@@ -374,18 +387,21 @@ contract StakingRewards is Ownable, ReentrancyGuard, Pausable {
     }
 
     /// @dev Set minimum stake amount; 0 disables the check.
+    /// @param _min Minimum stake amount (0 to disable).
     function setMinStakeAmount(uint256 _min) external onlyOwner {
         minStakeAmount = _min;
         emit SetMinStakeAmount(_min);
     }
 
     /// @dev Set per-user stake cap; 0 disables the cap.
+    /// @param _max Maximum stake per user (0 to disable).
     function setMaxStakePerUser(uint256 _max) external onlyOwner {
         maxStakePerUser = _max;
         emit SetMaxStakePerUser(_max);
     }
 
     /// @dev Configure rewards duration (only after current period ends).
+    /// @param _rewardsDuration Reward duration in seconds.
     function setRewardsDuration(uint256 _rewardsDuration) external onlyOwner {
         if (block.timestamp <= periodFinish) {
             revert RewardPeriodActive();
@@ -400,6 +416,7 @@ contract StakingRewards is Ownable, ReentrancyGuard, Pausable {
     }
 
     /// @dev Start or update reward emission for the next period.
+    /// @param amount Amount of reward tokens to inject for the next period.
     function notifyRewardAmount(uint256 amount) external onlyOwner updateReward(address(0)) {
         if (rewardsDuration == 0) {
             revert InvalidRewardsDuration();
