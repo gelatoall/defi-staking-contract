@@ -1,5 +1,7 @@
 # StakingRewards Design Doc
 
+English | [中文](Staking_Design_Doc.zh-CN.md)
+
 ## Context and Scope
 
 `StakingRewards` is a lock-up staking contract where users deposit a staking token (`stakingToken`) and earn rewards in another token (`rewardToken`).
