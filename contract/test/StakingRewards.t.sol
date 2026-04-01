@@ -198,17 +198,22 @@ contract StakingRewardsTest is Test {
         // 1. T=0: Alice 质押 100 STK，选择 Tier 1 (90 days, 1.5x multiplier)
         uint256 stakeAmount = 100e18;
         uint256 tierIndex = 1; // 1.5x 权重
+        uint256 dt = 10; // 定义时间差10s
         
         vm.prank(alice);
         staking.stake(stakeAmount, tierIndex);
 
         // 2. T=10: 快进 10 秒
-        vm.warp(block.timestamp + 10);
+        vm.warp(block.timestamp + dt);
 
         // 计算预期收益：由于 Alice 是当前唯一质押者，她拥有 100% 的权重
-        // 预期收益 = 10秒 * 每秒奖励速率
-        uint256 expected = 10 * staking.rewardRate();
-        assertEq(staking.earned(alice), expected - 100, "Should match after rounding loss");
+        // 正确写法（the same integer path as the contract）：
+        // 第一步截断：模拟 rewardPerToken 的计算
+        uint256 rptDelta = (staking.rewardRate() * dt * staking.PRECISION()) / staking.totalWeight();
+        // 第二步截断：模拟 earned 的计算
+        uint256 userWeight = staking.userTotalWeight(alice);
+        uint256 expected = userWeight * rptDelta / staking.PRECISION();
+        assertEq(staking.earned(alice), expected, "Should match after rounding loss");
 
         // 3. 第一次领取奖励
         // aliceRewardBefore = 0
@@ -220,7 +225,7 @@ contract StakingRewardsTest is Test {
         uint256 aliceRewardAfter = rewardToken.balanceOf(alice);
 
         // --- 验证点 1: 奖励代币真实到账 ---
-        assertEq(aliceRewardAfter - aliceRewardBefore, expected - 100, "Alice should receive exactly 1000 reward tokens");
+        assertEq(aliceRewardAfter - aliceRewardBefore, expected, "Alice should receive exactly 1000 reward tokens");
 
         // --- 验证点 2: 逻辑账本状态重置 ---
         // 即使 Alice 的本金还在锁定期（90天），她的“已实现收益”在领取后必须归零

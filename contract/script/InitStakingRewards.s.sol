@@ -21,7 +21,13 @@ contract InitStakingRewards is Script {
             StakingRewards(stakingAddr).setRewardsDuration(rewardsDuration);
         }
 
-        // Fund and start rewards.
+        // Fund and start rewards (skip if rewardAmount == 0).
+        if (rewardAmount == 0) {
+            console.log("Reward Amount is 0; skip notifyRewardAmount");
+            vm.stopBroadcast();
+            return;
+        }
+
         IERC20(rewardTokenAddr).transfer(stakingAddr, rewardAmount);
         StakingRewards(stakingAddr).notifyRewardAmount(rewardAmount);
 
